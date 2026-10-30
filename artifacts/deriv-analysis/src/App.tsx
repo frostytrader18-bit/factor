@@ -1,10 +1,9 @@
-import { type ReactNode } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
-import { useEffect, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -20,7 +19,6 @@ import {
   Layers3,
   Menu,
   Radio,
-  ScanLine,
   Settings2,
   ShieldCheck,
   Signal,
@@ -28,6 +26,8 @@ import {
   X,
   Zap,
 } from 'lucide-react';
+import { ActivityLogView, type ActivityRecord } from './components/analysis/ActivityLogView';
+import { CycleMapView } from './components/analysis/CycleMapView';
 import {
   Route,
   Switch,
@@ -36,6 +36,8 @@ import {
 } from 'wouter';
 
 const queryClient = new QueryClient();
+
+type TabKey = 'Dashboard' | 'Cycle map' | 'Activity log';
 
 function Home() {
   const markets = ['Volatility 100 Index', 'Volatility 75 Index', 'Volatility 50 (1s) Index', 'Boom 500 Index'];
@@ -46,8 +48,20 @@ function Home() {
   const [countdown, setCountdown] = useState(19);
   const [notice, setNotice] = useState('');
   const [logExpanded, setLogExpanded] = useState(true);
-  const [activeTab, setActiveTab] = useState('Dashboard');
+  const [activeTab, setActiveTab] = useState<TabKey>('Dashboard');
   const [lastAction, setLastAction] = useState('Preview console initialized');
+  const activitySequence = useRef(3);
+  const [activityEntries, setActivityEntries] = useState<ActivityRecord[]>([
+    { id: 2, time: 'READY', title: 'Sample snapshot loaded', detail: 'Illustrative values shown for this interface preview.', tone: 'blue' },
+    { id: 1, time: 'READY', title: 'Market feed not connected', detail: 'No live data or account connection is active.', tone: 'gold' },
+  ]);
+
+  const recordActivity = (title: string, detail: string, tone: ActivityRecord['tone'] = 'cyan') => {
+    const id = activitySequence.current++;
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    setActivityEntries((entries) => [{ id, time, title, detail, tone }, ...entries].slice(0, 30));
+    setLastAction(title);
+  };
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -58,11 +72,20 @@ function Home() {
 
   const runPreview = () => {
     setNotice('Sample preview refreshed — no market data requested.');
-    setLastAction('Local preview refreshed');
+    recordActivity('Sample preview refreshed', 'A local interface preview was refreshed; no market data was requested.', 'gold');
     window.setTimeout(() => setNotice(''), 3400);
   };
 
   const confidence = market.includes('100') ? '93.9%' : market.includes('75') ? '91.6%' : market.includes('50') ? '88.4%' : '86.7%';
+  const tabs: { label: TabKey; icon: typeof BarChart3 }[] = [
+    { label: 'Dashboard', icon: BarChart3 },
+    { label: 'Cycle map', icon: Layers3 },
+    { label: 'Activity log', icon: Menu },
+  ];
+  const handleStepChange = (value: string) => {
+    setStep(value);
+    recordActivity('Cycle step selected', `${value} selected in the local preview.`, 'blue');
+  };
 
   return (
     <main className="dashboard-backdrop min-h-[100dvh] px-3 pb-8 pt-3 text-[#dce6ef] sm:px-6 sm:pt-6">
@@ -95,12 +118,8 @@ function Home() {
         </header>
 
         <nav className="section-nav mb-4 flex items-center gap-1 overflow-x-auto border-b border-[#263441] sm:mb-5" aria-label="Dashboard sections">
-          {[
-            { label: 'Dashboard', icon: BarChart3 },
-            { label: 'Cycle map', icon: Layers3 },
-            { label: 'Activity log', icon: Menu },
-          ].map(({ label, icon: Icon }) => (
-            <button key={label} type="button" onClick={() => { setActiveTab(label); if (label === 'Activity log') setLogExpanded(true); }} data-testid={`tab-${label.toLowerCase().replace(' ', '-')}`} className={`relative flex shrink-0 items-center gap-2 px-3 py-2.5 text-[11px] font-bold tracking-[.08em] transition ${activeTab === label ? 'nav-current text-[#50d7d2] after:absolute after:inset-x-3 after:bottom-[-1px] after:h-[2px] after:bg-[#50d7d2]' : 'text-[#778894] hover:text-[#c4d2da]'}`}>
+          {tabs.map(({ label, icon: Icon }) => (
+            <button key={label} type="button" aria-current={activeTab === label ? 'page' : undefined} onClick={() => { if (label !== activeTab) recordActivity(`${label} opened`, `Opened the ${label.toLowerCase()} view.`, 'violet'); setActiveTab(label); if (label === 'Activity log') setLogExpanded(true); }} data-testid={`tab-${label.toLowerCase().replace(' ', '-')}`} className={`relative flex shrink-0 items-center gap-2 px-3 py-2.5 text-[11px] font-bold tracking-[.08em] transition ${activeTab === label ? 'nav-current text-[#50d7d2] after:absolute after:inset-x-3 after:bottom-[-1px] after:h-[2px] after:bg-[#50d7d2]' : 'text-[#778894] hover:text-[#c4d2da]'}`}>
               <Icon size={14} />{label.toUpperCase()}
             </button>
           ))}
@@ -111,6 +130,8 @@ function Home() {
 
         {notice && <div role="status" data-testid="status-notice" className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-[#1f7374]/50 bg-[#0e3034] px-3 py-2.5 text-[11px] text-[#9be7df] rise-in"><span>{notice}</span><button type="button" onClick={() => setNotice('')} data-testid="button-dismiss-notice" aria-label="Dismiss notice"><X size={14} /></button></div>}
 
+        {activeTab === 'Dashboard' ? (
+        <DashboardView>
         <section className="gold-frame vibrant-frame scanline relative overflow-hidden rounded-[15px] bg-[#0e171f] p-3 sm:p-5">
           <div className="ambient-orb ambient-orb-a pointer-events-none absolute right-[-60px] top-[-110px] h-64 w-64 rounded-full bg-[#10bfc3]/[.06] blur-[70px]" />
           <div className="ambient-orb ambient-orb-b pointer-events-none absolute bottom-[13%] left-[-120px] h-64 w-64 rounded-full bg-[#a344ff]/[.08] blur-[75px]" />
@@ -132,19 +153,19 @@ function Home() {
                 <Radio size={15} className="shrink-0 text-[#45d6d0]" />
                 <span className="min-w-0 flex-1">
                   <span className="block font-mono-ui text-[8px] tracking-[.13em] text-[#7da4a6]">SELECTED MARKET · PREVIEW</span>
-                  <select value={market} onChange={(event) => { setMarket(event.target.value); setLastAction('Selected sample market changed'); }} data-testid="select-market" aria-label="Select sample market" className="mt-1 w-full appearance-none bg-transparent pr-5 text-[12px] font-bold text-[#dff8f5] outline-none">
+                    <select value={market} onChange={(event) => { setMarket(event.target.value); recordActivity('Sample market changed', `Selected ${event.target.value} for this preview.`, 'cyan'); }} data-testid="select-market" aria-label="Select sample market" className="mt-1 w-full appearance-none bg-transparent pr-5 text-[12px] font-bold text-[#dff8f5] outline-none">
                     {markets.map((item) => <option key={item} value={item} className="bg-[#101a22]">{item}</option>)}
                   </select>
                 </span>
                 <ChevronDown size={14} className="shrink-0 text-[#6aa4a4]" />
               </label>
               <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => { setAutoScan((value) => !value); setLastAction(`Auto-scan ${autoScan ? 'paused' : 'enabled'} locally`); }} aria-pressed={autoScan} data-testid="toggle-auto-scan" className={`button-auto flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[10px] font-extrabold tracking-[.04em] transition ${autoScan ? 'border-[#28777a] bg-[#10383a] text-[#64dfd8]' : 'border-[#394654] bg-[#19222b] text-[#aab6c0]'}`}>
+                <button type="button" onClick={() => { const next = !autoScan; setAutoScan(next); recordActivity(`Auto-scan ${next ? 'enabled' : 'paused'}`, 'Local interface toggle only; no automatic analysis is running.', next ? 'green' : 'gold'); }} aria-pressed={autoScan} data-testid="toggle-auto-scan" className={`button-auto flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[10px] font-extrabold tracking-[.04em] transition ${autoScan ? 'border-[#28777a] bg-[#10383a] text-[#64dfd8]' : 'border-[#394654] bg-[#19222b] text-[#aab6c0]'}`}>
                   <span className={`relative h-[14px] w-[25px] rounded-full transition ${autoScan ? 'bg-[#19aaa9]' : 'bg-[#43505b]'}`}><span className={`absolute top-[2px] h-[10px] w-[10px] rounded-full bg-[#e5f7f3] transition-transform ${autoScan ? 'translate-x-[13px]' : 'translate-x-[2px]'}`} /></span>
                   AUTO-SCAN <span className="font-mono-ui text-[9px]">{autoScan ? 'ON' : 'OFF'}</span>
                 </button>
                 <button type="button" onClick={runPreview} data-testid="button-scan-preview" className="button-refresh flex items-center justify-center gap-2 rounded-lg border border-[#c4a44e] bg-gradient-to-r from-[#b68a31] to-[#e0bc5c] px-2 py-2.5 text-[10px] font-extrabold tracking-[.06em] text-[#211b10] shadow-[0_3px_15px_rgba(195,155,58,.14)] transition hover:brightness-110 active:translate-y-px"><Zap size={14} /> REFRESH SAMPLE</button>
-                <button type="button" onClick={() => setActiveTab('Cycle map')} data-testid="button-open-cycles" className="button-cycle flex items-center justify-center gap-2 rounded-lg border border-[#20697a] bg-[#102b39] px-2 py-2.5 text-[10px] font-bold tracking-[.04em] text-[#66c9e2] transition hover:border-[#42a6bd]"><Layers3 size={13} /> CYCLE MAP</button>
+                <button type="button" onClick={() => { setActiveTab('Cycle map'); recordActivity('Cycle map opened', 'Opened the local cycle sequence view.', 'violet'); }} data-testid="button-open-cycles" className="button-cycle flex items-center justify-center gap-2 rounded-lg border border-[#20697a] bg-[#102b39] px-2 py-2.5 text-[10px] font-bold tracking-[.04em] text-[#66c9e2] transition hover:border-[#42a6bd]"><Layers3 size={13} /> CYCLE MAP</button>
                 <button type="button" onClick={() => setNotice('Entry section is informational only — no trading actions are available.')} data-testid="button-entry-info" className="button-entry flex items-center justify-center gap-2 rounded-lg border border-[#167d79] bg-[#0e4140] px-2 py-2.5 text-[10px] font-bold tracking-[.04em] text-[#73e5d9] transition hover:border-[#32b9ae]"><CircleHelp size={13} /> ENTRY INFO</button>
               </div>
             </div>
@@ -158,7 +179,7 @@ function Home() {
                   </div>
                   <div className="mb-3 flex flex-wrap items-center gap-1.5">
                     {cycleSteps.map((item, index) => <div key={item} className="flex items-center gap-1.5">
-                      <button type="button" onClick={() => { setStep(item); setLastAction(`Cycle step changed to ${item}`); }} aria-pressed={step === item} data-testid={`button-cycle-step-${index + 1}`} className={`rounded-md border px-2.5 py-1.5 font-mono-ui text-[10px] transition ${step === item ? 'cycle-step-active border-[#2d8ec5] bg-[#123b64] text-[#8cdbff] shadow-[inset_0_0_12px_rgba(41,157,228,.1)]' : 'border-[#354653] bg-[#17232d] text-[#a3b0b8] hover:border-[#55717f]'}`}>{item}</button>
+                      <button type="button" onClick={() => handleStepChange(item)} aria-pressed={step === item} data-testid={`button-cycle-step-${index + 1}`} className={`rounded-md border px-2.5 py-1.5 font-mono-ui text-[10px] transition ${step === item ? 'cycle-step-active border-[#2d8ec5] bg-[#123b64] text-[#8cdbff] shadow-[inset_0_0_12px_rgba(41,157,228,.1)]' : 'border-[#354653] bg-[#17232d] text-[#a3b0b8] hover:border-[#55717f]'}`}>{item}</button>
                       {index < cycleSteps.length - 1 && <span className="font-mono-ui text-[9px] text-[#61737e]">→</span>}
                     </div>)}
                   </div>
@@ -242,9 +263,19 @@ function Home() {
           </div>
         </section>
         <p className="mx-auto mt-3 max-w-4xl text-center font-mono-ui text-[8px] leading-relaxed tracking-[.08em] text-[#566872]">DERIV MARKET ANALYSIS CONSOLE <span className="mx-1 text-[#a98b4d]">/</span> LOCAL INTERACTION DEMO <span className="mx-1 text-[#a98b4d]">/</span> TRADING DISABLED</p>
+        </DashboardView>
+        ) : activeTab === 'Cycle map' ? (
+          <CycleMapView market={market} steps={cycleSteps} selectedStep={step} countdown={countdown} onSelectStep={handleStepChange} />
+        ) : (
+          <ActivityLogView entries={activityEntries} />
+        )}
       </div>
     </main>
   );
+}
+
+function DashboardView({ children }: { children: ReactNode }) {
+  return <div data-testid="view-dashboard" className="tab-view rise-in">{children}</div>;
 }
 
 function Router() {

@@ -370,6 +370,10 @@
   text-shadow: 0 0 26px currentColor;
   animation: countdown-breathe 2.2s ease-in-out infinite;
 }
+.tab-view {
+  min-width: 0;
+  animation: tab-enter .24s ease both;
+}
 
 @keyframes brand-breathe {
   0%, 100% { box-shadow: 0 0 18px rgba(28, 214, 222, .16), inset 0 0 14px rgba(86, 201, 255, .1); }
@@ -386,6 +390,10 @@
 @keyframes countdown-breathe {
   0%, 100% { transform: scale(1); }
   50% { transform: scale(1.035); }
+}
+@keyframes tab-enter {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 :focus-visible {
