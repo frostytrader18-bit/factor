@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Deriv Analysis"
+description = "A responsive Deriv market analysis dashboard inspired by the supplied screenshots, with a dark neon interface and clearly labeled preview data while live market connections and strategies remain out of scope."
+version = "1.0.0"
+id = "artifacts/deriv-analysis"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25651
+
+[services.development]
+run = "pnpm --filter @workspace/deriv-analysis run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/deriv-analysis", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/deriv-analysis/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25651"
+BASE_PATH = "/"

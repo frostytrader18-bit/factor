@@ -1,0 +1,1 @@
+- [Deriv Analysis sequencing](deriv-analysis-product-sequencing.md) — confirm the dashboard UI before adding analysis strategies.
