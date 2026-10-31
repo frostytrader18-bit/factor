@@ -320,22 +320,17 @@
 }
 .metric-card::after {
   position: absolute;
-  top: -45%;
-  right: -22%;
-  width: 56%;
-  height: 180%;
-  border-radius: 50%;
+  inset: 0;
   content: "";
   pointer-events: none;
-  filter: blur(20px);
-  opacity: .35;
+  opacity: .12;
   transition: opacity .2s ease;
 }
 .metric-card:hover {
   transform: translateY(-2px);
 }
 .metric-card:hover::after {
-  opacity: .65;
+  opacity: .2;
 }
 .metric-confidence {
   background: linear-gradient(135deg, rgba(16, 50, 69, .98), rgba(22, 44, 82, .96)) !important;
@@ -343,7 +338,7 @@
   box-shadow: inset 0 0 26px rgba(55, 179, 242, .11), 0 0 19px rgba(56, 176, 246, .08) !important;
 }
 .metric-confidence::after {
-  background: #28c9ec;
+  background: radial-gradient(ellipse at 100% 0%, #28c9ec, transparent 70%);
 }
 .metric-sample {
   background: linear-gradient(135deg, rgba(14, 58, 49, .98), rgba(25, 64, 54, .94)) !important;
@@ -351,7 +346,14 @@
   box-shadow: inset 0 0 25px rgba(53, 217, 149, .1), 0 0 17px rgba(53, 217, 149, .07) !important;
 }
 .metric-sample::after {
-  background: #62f1b6;
+  background: radial-gradient(ellipse at 100% 0%, #62f1b6, transparent 70%);
+}
+
+@media (hover: none) {
+  .analysis-card:hover,
+  .metric-card:hover {
+    transform: none;
+  }
 }
 .timer-panel {
   box-shadow: inset 0 0 30px rgba(67, 103, 226, .045), 0 0 23px rgba(79, 117, 226, .055);
