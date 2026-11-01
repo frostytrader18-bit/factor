@@ -24,9 +24,11 @@ type ScannedMarket = {
   symbol: string;
   label: string;
   ticks: LiveTick[];
+  tickVersion: number;
 };
 
 type MarketCandidate = ScannedMarket & ContractSignal & {
+  scanTicks: LiveTick[];
   backtestHits: number;
   backtestPredictions: number;
   backtestAccuracy: number;
@@ -45,12 +47,21 @@ type ActivePrediction = ContractSignal & {
   expiresAt: number;
 };
 
+export type PredictionOutcomeStart = Pick<
+  ActivePrediction,
+  'contractType' | 'signalKey' | 'signalLabel' | 'digit' | 'marketSymbol' | 'marketLabel' | 'expiresAt'
+> & {
+  id: string;
+  startedAt: number;
+};
+
 type DigitScannerViewProps = {
   markets: ScannedMarket[];
   contractType: ContractType;
   feedStatus: FeedStatus;
   feedError: string | null;
   onMarketSelect: (symbol: string) => void;
+  onPredictionStart: (prediction: PredictionOutcomeStart) => void;
 };
 
 const DIGIT_COUNT = 10;
@@ -58,10 +69,12 @@ const BASE_RATE = 1 / DIGIT_COUNT;
 const MIN_TRAINING_TICKS = 100;
 const MIN_OUT_OF_SAMPLE_CALLS = 100;
 const MIN_DIGIT_TEST_CALLS = 10;
+const MIN_FRESH_SCAN_TICKS = 1;
 const BACKTEST_LIMIT = 250;
 const RECENT_ANALYSIS_TICKS = 20;
 const RECENT_DIGIT_WINDOW = 10;
 const SCANNER_COUNTDOWN_SECONDS = 10;
+const PREDICTION_VALIDITY_SECONDS = 30;
 
 type OverUnderStrategy = {
   direction: 'over' | 'under';
@@ -69,18 +82,23 @@ type OverUnderStrategy = {
   baselineRate: number;
 };
 
-function isContractWin(contractType: ContractType, signal: ContractSignal, digit: number) {
+export function isContractWin(
+  contractType: ContractType,
+  signalKey: string,
+  signalDigit: number | null,
+  digit: number,
+) {
   switch (contractType) {
     case 'match-digit':
-      return digit === signal.digit;
+      return digit === signalDigit;
     case 'differ':
-      return digit !== signal.digit;
+      return digit !== signalDigit;
     case 'over':
-      return digit > (signal.digit ?? 9);
+      return digit > (signalDigit ?? 9);
     case 'under':
-      return digit < (signal.digit ?? 0);
+      return digit < (signalDigit ?? 0);
     case 'even-odd':
-      return signal.signalKey === (digit % 2 === 0 ? 'even' : 'odd');
+      return signalKey === (digit % 2 === 0 ? 'even' : 'odd');
   }
   return false;
 }
@@ -99,9 +117,10 @@ function getContractSignal(
   ticks: LiveTick[],
   contractType: ContractType,
   overUnderStrategy: OverUnderStrategy | null,
+  signalWindowSize = RECENT_DIGIT_WINDOW,
 ): ContractSignal | null {
   const analysisTicks = ticks.slice(-RECENT_ANALYSIS_TICKS);
-  const recentTicks = analysisTicks.slice(-RECENT_DIGIT_WINDOW);
+  const recentTicks = analysisTicks.slice(-signalWindowSize);
   if (recentTicks.length === 0) {
     return null;
   }
@@ -138,26 +157,31 @@ function getContractSignal(
   const signalBase = { signalKey, signalLabel, digit, baselineRate };
   return {
     ...signalBase,
-    recentOccurrences: recentTicks.filter((tick) => isContractWin(contractType, signalBase, tick.digit)).length,
+    recentOccurrences: recentTicks.filter((tick) => isContractWin(contractType, signalKey, digit, tick.digit)).length,
     recentSampleSize: recentTicks.length,
     analyzedTickCount: analysisTicks.length,
-    analyzedWindowOccurrences: analysisTicks.filter((tick) => isContractWin(contractType, signalBase, tick.digit)).length,
+    analyzedWindowOccurrences: analysisTicks.filter((tick) => isContractWin(contractType, signalKey, digit, tick.digit)).length,
   };
 }
 
-function getWalkForwardResults(ticks: LiveTick[], contractType: ContractType, overUnderStrategy: OverUnderStrategy | null) {
+function getWalkForwardResults(
+  ticks: LiveTick[],
+  contractType: ContractType,
+  overUnderStrategy: OverUnderStrategy | null,
+  signalWindowSize = RECENT_DIGIT_WINDOW,
+) {
   const firstTestIndex = Math.max(MIN_TRAINING_TICKS, ticks.length - BACKTEST_LIMIT);
   let predictions = 0;
   const signalResults = new Map<string, { hits: number; predictions: number }>();
 
   for (let index = firstTestIndex; index < ticks.length; index += 1) {
-    const candidate = getContractSignal(ticks.slice(0, index), contractType, overUnderStrategy);
+    const candidate = getContractSignal(ticks.slice(0, index), contractType, overUnderStrategy, signalWindowSize);
     if (!candidate) continue;
 
     const result = signalResults.get(candidate.signalKey) ?? { hits: 0, predictions: 0 };
     predictions += 1;
     result.predictions += 1;
-    if (isContractWin(contractType, candidate, ticks[index].digit)) result.hits += 1;
+    if (isContractWin(contractType, candidate.signalKey, candidate.digit, ticks[index].digit)) result.hits += 1;
     signalResults.set(candidate.signalKey, result);
   }
 
@@ -172,19 +196,28 @@ function formatCountdown(seconds: number) {
   return seconds.toString().padStart(2, '0');
 }
 
-function scanMarkets(markets: ScannedMarket[], contractType: ContractType): MarketCandidate[] {
+function scanMarkets(
+  markets: ScannedMarket[],
+  contractType: ContractType,
+  scanTicksByMarket: Map<string, LiveTick[]>,
+): MarketCandidate[] {
   return markets
     .flatMap((market) => {
+      const scanTicks = scanTicksByMarket.get(market.symbol);
+      if (!scanTicks || scanTicks.length < MIN_FRESH_SCAN_TICKS) {
+        return [];
+      }
       if (market.ticks.length < MIN_TRAINING_TICKS + MIN_OUT_OF_SAMPLE_CALLS) {
         return [];
       }
 
       const overUnderStrategy = getOverUnderStrategy(contractType);
-      const backtest = getWalkForwardResults(market.ticks, contractType, overUnderStrategy);
+      const signalWindowSize = Math.min(scanTicks.length, RECENT_DIGIT_WINDOW);
+      const backtest = getWalkForwardResults(market.ticks, contractType, overUnderStrategy, signalWindowSize);
       if (backtest.predictions < MIN_OUT_OF_SAMPLE_CALLS) {
         return [];
       }
-      const recentCandidate = getContractSignal(market.ticks, contractType, overUnderStrategy);
+      const recentCandidate = getContractSignal(scanTicks, contractType, overUnderStrategy, signalWindowSize);
       if (!recentCandidate) {
         return [];
       }
@@ -200,9 +233,13 @@ function scanMarkets(markets: ScannedMarket[], contractType: ContractType): Mark
         + (z * z) / (2 * result.predictions)
         - z * Math.sqrt((accuracy * (1 - accuracy) + (z * z) / (4 * result.predictions)) / result.predictions)
       ) / (1 + (z * z) / result.predictions);
+      if (wilsonLowerBound <= recentCandidate.baselineRate) {
+        return [];
+      }
 
       return [{
         ...market,
+        scanTicks,
         ...recentCandidate,
         backtestHits: result.hits,
         backtestPredictions: result.predictions,
@@ -211,8 +248,9 @@ function scanMarkets(markets: ScannedMarket[], contractType: ContractType): Mark
       }];
     })
     .sort((left, right) => (
-      right.backtestAccuracy - left.backtestAccuracy
-      || right.wilsonLowerBound - left.wilsonLowerBound
+      right.wilsonLowerBound - left.wilsonLowerBound
+      || right.backtestPredictions - left.backtestPredictions
+      || right.backtestAccuracy - left.backtestAccuracy
       || right.recentOccurrences / right.recentSampleSize - left.recentOccurrences / left.recentSampleSize
     ));
 }
@@ -223,6 +261,7 @@ export function DigitScannerView({
   feedStatus,
   feedError,
   onMarketSelect,
+  onPredictionStart,
 }: DigitScannerViewProps) {
   const [predictionSecondsRemaining, setPredictionSecondsRemaining] = useState(0);
   const [scanCountdownSeconds, setScanCountdownSeconds] = useState(0);
@@ -232,10 +271,10 @@ export function DigitScannerView({
   const [scanResults, setScanResults] = useState<MarketCandidate[] | null>(null);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const marketsRef = useRef(markets);
-  const latestScanResultsRef = useRef<MarketCandidate[]>([]);
-  const contractTypeRef = useRef(contractType);
+  const scanStartTickVersionsRef = useRef(new Map<string, number>());
+  const callbacksRef = useRef({ onMarketSelect, onPredictionStart });
   marketsRef.current = markets;
-  contractTypeRef.current = contractType;
+  callbacksRef.current = { onMarketSelect, onPredictionStart };
   const feedStatusLabel = feedStatus === 'live'
     ? 'LIVE'
     : feedStatus === 'reconnecting'
@@ -267,7 +306,6 @@ export function DigitScannerView({
     setPredictionSecondsRemaining(0);
     setScanResults(null);
     setScanMessage(null);
-    latestScanResultsRef.current = [];
     if (isAnalyzing) {
       setIsAnalyzing(false);
       setScanCountdownSeconds(0);
@@ -281,10 +319,11 @@ export function DigitScannerView({
 
     setActivePrediction(null);
     setPredictionSecondsRemaining(0);
-    const initialResults = scanMarkets(marketsRef.current, contractTypeRef.current);
-    latestScanResultsRef.current = initialResults;
-    setScanResults(initialResults);
-    setScanMessage(`Analyzing incoming ticks for ${SCANNER_COUNTDOWN_SECONDS}s. Rankings refresh as live market data arrives.`);
+    setScanResults(null);
+    scanStartTickVersionsRef.current = new Map(
+      marketsRef.current.map((market) => [market.symbol, market.tickVersion]),
+    );
+    setScanMessage(`Collecting fresh market ticks for ${SCANNER_COUNTDOWN_SECONDS}s. Previous results are hidden until this scan completes.`);
     setScanCountdownSeconds(SCANNER_COUNTDOWN_SECONDS);
     setIsAnalyzing(true);
   };
@@ -302,8 +341,6 @@ export function DigitScannerView({
     }
 
     const deadline = Date.now() + SCANNER_COUNTDOWN_SECONDS * 1000;
-    let latestResults = latestScanResultsRef.current;
-    let lastAnalyzedSignature = '';
     const timer = window.setInterval(() => {
       const secondsRemaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
       setScanCountdownSeconds(secondsRemaining);
@@ -311,16 +348,41 @@ export function DigitScannerView({
         window.clearInterval(timer);
         setIsAnalyzing(false);
         setLastManualScan(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-        if (latestResults.length === 0) {
+        const scanTicksByMarket = new Map<string, LiveTick[]>();
+        for (const market of marketsRef.current) {
+          const freshTickCount = market.tickVersion
+            - (scanStartTickVersionsRef.current.get(market.symbol) ?? market.tickVersion);
+          if (freshTickCount >= MIN_FRESH_SCAN_TICKS) {
+            scanTicksByMarket.set(market.symbol, market.ticks.slice(-Math.min(freshTickCount, market.ticks.length)));
+          }
+        }
+        const finalResults = scanMarkets(marketsRef.current, contractType, scanTicksByMarket);
+        const scannedMarketCount = scanTicksByMarket.size;
+        if (finalResults.length === 0) {
           setActivePrediction(null);
           setPredictionSecondsRemaining(0);
-          setScanMessage(`No market qualified for ${contractLabel}. Each needs ${MIN_TRAINING_TICKS} training ticks and ${MIN_OUT_OF_SAMPLE_CALLS} tested calls.`);
+          setScanMessage(`No statistically supported ${contractLabel} signal this scan. Fresh ticks arrived from ${scanTicksByMarket.size}/${marketsRef.current.length} markets; only picks with a walk-forward confidence bound above the contract baseline are shown.`);
           return;
         }
 
-        const topCandidate = latestResults[0];
-        setScanResults(latestResults);
-        setScanMessage(null);
+        const topCandidate = finalResults[0];
+        setScanResults(finalResults);
+        setScanMessage(`Fresh ticks received from ${scannedMarketCount}/${marketsRef.current.length} markets; ranked ${finalResults.length} qualified markets by conservative walk-forward results. Historical rates are not guarantees.`);
+        const startedAt = Date.now();
+        const expiresAt = startedAt + PREDICTION_VALIDITY_SECONDS * 1000;
+        const outcomeStart: PredictionOutcomeStart = {
+          id: `${topCandidate.symbol}-${startedAt}`,
+          contractType,
+          signalKey: topCandidate.signalKey,
+          signalLabel: topCandidate.signalLabel,
+          digit: topCandidate.digit,
+          marketSymbol: topCandidate.symbol,
+          marketLabel: topCandidate.label,
+          startedAt,
+          expiresAt,
+        };
+        callbacksRef.current.onMarketSelect(topCandidate.symbol);
+        callbacksRef.current.onPredictionStart(outcomeStart);
         setActivePrediction({
           contractType,
           signalKey: topCandidate.signalKey,
@@ -331,28 +393,16 @@ export function DigitScannerView({
           recentSampleSize: topCandidate.recentSampleSize,
           analyzedTickCount: topCandidate.analyzedTickCount,
           analyzedWindowOccurrences: topCandidate.analyzedWindowOccurrences,
-          analyzedTicks: topCandidate.ticks.slice(-RECENT_ANALYSIS_TICKS),
+          analyzedTicks: topCandidate.scanTicks.slice(-RECENT_ANALYSIS_TICKS),
           marketSymbol: topCandidate.symbol,
           marketLabel: topCandidate.label,
           backtestHits: topCandidate.backtestHits,
           backtestPredictions: topCandidate.backtestPredictions,
           backtestAccuracy: topCandidate.backtestAccuracy,
           wilsonLowerBound: topCandidate.wilsonLowerBound,
-          expiresAt: Date.now() + SCANNER_COUNTDOWN_SECONDS * 1000,
+          expiresAt,
         });
-        setPredictionSecondsRemaining(SCANNER_COUNTDOWN_SECONDS);
-        return;
-      }
-
-      const currentMarkets = marketsRef.current;
-      const signature = currentMarkets
-        .map((market) => `${market.symbol}:${market.ticks.length}:${market.ticks.at(-1)?.price ?? ''}`)
-        .join('|');
-      if (signature !== lastAnalyzedSignature) {
-        lastAnalyzedSignature = signature;
-        latestResults = scanMarkets(currentMarkets, contractType);
-        latestScanResultsRef.current = latestResults;
-        setScanResults(latestResults);
+        setPredictionSecondsRemaining(PREDICTION_VALIDITY_SECONDS);
       }
     }, 250);
 
@@ -437,7 +487,7 @@ export function DigitScannerView({
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
               <span className="font-mono-ui text-[9px] text-[#98a9c2]">
                 {isAnalyzing
-                  ? `ANALYZING LAST ${RECENT_ANALYSIS_TICKS} TICKS ACROSS MARKETS`
+                  ? `ANALYZING ${totalMarkets} MARKETS IN PARALLEL`
                   : displayedPrediction
                     ? `TOP ${contractLabel} PERFORMER · ${displayedPrediction.marketSymbol}`
                     : scanResults
@@ -476,7 +526,7 @@ export function DigitScannerView({
               <div className="inline-flex items-center gap-2 rounded-lg border border-[#216caf] bg-[#08284c] px-3 py-2 shadow-[0_0_15px_rgba(27,135,255,.18)]">
                 <Target size={14} className="text-[#5bbaff]" />
                 <div>
-                  <p className="font-mono-ui text-[7px] font-bold tracking-wider text-[#70baff]">LATEST 10 CONTRACT WINS</p>
+                  <p className="font-mono-ui text-[7px] font-bold tracking-wider text-[#70baff]">SCAN-WINDOW CONTRACT WIN RATE</p>
                   <strong data-testid="scanner-candidate-probability" className="font-display text-[16px] font-extrabold text-[#e8f5ff]">
                     {displayedPrediction
                       ? formatPercent(displayedPrediction.recentOccurrences / displayedPrediction.recentSampleSize)
@@ -486,7 +536,7 @@ export function DigitScannerView({
               </div>
               <span data-testid="scanner-digit-recurrence" className="font-mono-ui text-[8px] text-[#8e9db5]">
                 {displayedPrediction
-                  ? `${displayedPrediction.signalLabel}: ${displayedPrediction.recentOccurrences}/${displayedPrediction.recentSampleSize} recent wins · ${displayedPrediction.analyzedWindowOccurrences}/${displayedPrediction.analyzedTickCount} analyzed`
+                  ? `${displayedPrediction.signalLabel}: ${displayedPrediction.recentOccurrences}/${displayedPrediction.recentSampleSize} scan wins · ${displayedPrediction.analyzedWindowOccurrences}/${displayedPrediction.analyzedTickCount} scan ticks analyzed`
                   : contractType === 'over' || contractType === 'under'
                     ? `${RECENT_ANALYSIS_TICKS} ticks analyzed · fixed ${contractType === 'over' ? 'Over 3' : 'Under 6'} barrier`
                     : contractType === 'even-odd'
@@ -544,7 +594,7 @@ export function DigitScannerView({
                     </strong>
                     <p className="font-mono-ui text-[9px] font-bold tracking-wider text-[#dce6ef]">SECONDS REMAINING</p>
                     <p className="mt-2 text-[9px] text-[#82939a]">
-                      Updating {contractLabel} market rankings as ticks arrive · contract signal uses the latest {RECENT_ANALYSIS_TICKS} ticks.
+                      Collecting fresh ticks from all {totalMarkets} markets at once · each result uses ticks received during this scan.
                     </p>
                     <div className="mx-auto mt-3 h-1.5 max-w-sm overflow-hidden rounded-full bg-[#1a2636]">
                       <div
@@ -556,7 +606,7 @@ export function DigitScannerView({
                 ) : (
                   <>
                     <Activity size={20} className="mx-auto mb-2 text-[#56d5cb]" />
-                    <p className="text-[11px] font-bold text-[#dce6ef]">{scanMessage ? 'No market passed the scan requirements' : 'No market picked yet'}</p>
+                    <p className="text-[11px] font-bold text-[#dce6ef]">{scanMessage ? 'No qualified market found' : 'No market picked yet'}</p>
                     <p className="mt-1 text-[9px] text-[#82939a]">
                       {scanMessage ?? `${readyMarkets} of ${totalMarkets} markets have enough out-of-sample calls. Press SCAN NOW to compare performance.`}
                     </p>
@@ -595,7 +645,7 @@ export function DigitScannerView({
                 {displayedPrediction
                   ? edgeValidated
                     ? `Top performer has a statistically supported edge over the ${(displayedPrediction.baselineRate * 100).toFixed(0)}% contract baseline.`
-                    : `Top performer by historical hit rate; edge over its ${(displayedPrediction.baselineRate * 100).toFixed(0)}% contract baseline is not statistically confirmed.`
+                    : `Top performer by conservative walk-forward estimate; edge over its ${(displayedPrediction.baselineRate * 100).toFixed(0)}% contract baseline is not statistically confirmed.`
                   : 'No market recommendation until you run a manual scan.'}
               </p>
             </div>
@@ -626,7 +676,7 @@ export function DigitScannerView({
             ) : (
               <p className="rounded-md border border-[#27344d] bg-[#0c1421] px-3 py-5 text-center text-[9px] text-[#82939a]">
                 {scanResults
-                  ? 'No market met the minimum walk-forward test sample.'
+                  ? `No market showed a statistically supported edge above the ${contractLabel.toLowerCase()} baseline.`
                   : 'No recommendation yet. Press SCAN NOW to rank markets using current walk-forward results.'}
               </p>
             )}
@@ -652,7 +702,7 @@ export function DigitScannerView({
             </section>
           </div>
 
-          <p data-testid="scanner-method-note" className="flex items-start gap-1.5 px-1 text-[8px] leading-relaxed text-[#72839a]"><ShieldCheck size={11} className="mt-0.5 shrink-0 text-[#62c9ae]" /> Each manual scan evaluates {contractLabel} over a 10-second live window and reports contract-specific walk-forward results. Recent win counts are historical observations, not guaranteed future probabilities. Data only; no contracts are purchased or traded.</p>
+          <p data-testid="scanner-method-note" className="flex items-start gap-1.5 px-1 text-[8px] leading-relaxed text-[#72839a]"><ShieldCheck size={11} className="mt-0.5 shrink-0 text-[#62c9ae]" /> Each manual scan evaluates {contractLabel} across all tracked markets in parallel for 10 seconds. Picks remain visible for 30 seconds; ranking favors conservative walk-forward results. Historical rates are not guaranteed future probabilities. Data only; no contracts are purchased or traded.</p>
         </div>
       </section>
     </section>

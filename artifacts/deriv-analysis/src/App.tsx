@@ -30,7 +30,12 @@ import {
   X,
 } from 'lucide-react';
 import { ActivityLogView, type ActivityRecord } from './components/analysis/ActivityLogView';
-import { DigitScannerView, type ContractType } from './components/analysis/DigitScannerView';
+import {
+  DigitScannerView,
+  isContractWin,
+  type ContractType,
+  type PredictionOutcomeStart,
+} from './components/analysis/DigitScannerView';
 import {
   Route,
   Switch,
@@ -120,6 +125,13 @@ interface ScannedMarketData extends MarketOption {
   ticks: LiveTick[];
 }
 
+type PredictionOutcomeRecord = PredictionOutcomeStart & {
+  wins: number;
+  losses: number;
+  observedTicks: number;
+  status: 'tracking' | 'complete' | 'replaced';
+};
+
 interface DerivFeedMessage {
   error?: { message?: string };
   req_id?: number;
@@ -174,12 +186,16 @@ function Home() {
   const [feedRetryKey, setFeedRetryKey] = useState(0);
   const [liveMarketData, setLiveMarketData] = useState(EMPTY_LIVE_MARKET_DATA);
   const [scannerTicksByMarket, setScannerTicksByMarket] = useState<Record<string, LiveTick[]>>({});
+  const [scannerTickVersionsByMarket, setScannerTickVersionsByMarket] = useState<Record<string, number>>({});
+  const [predictionOutcomes, setPredictionOutcomes] = useState<PredictionOutcomeRecord[]>([]);
   const [scannerFeedStatus, setScannerFeedStatus] = useState<FeedStatus>('connecting');
   const [scannerFeedError, setScannerFeedError] = useState<string | null>(null);
   const market = markets.find((item) => item.symbol === marketSymbol) ?? DEFAULT_MARKETS[0];
   const activitySequence = useRef(3);
   const tickHistoryByMarket = useRef(new Map<string, LiveTick[]>());
   const activeFeedMarket = useRef(marketSymbol);
+  const activePredictionOutcomeRef = useRef<PredictionOutcomeRecord | null>(null);
+  const predictionOutcomeTimeoutRef = useRef<number | undefined>(undefined);
   const [activityEntries, setActivityEntries] = useState<ActivityRecord[]>([
     { id: 2, time: 'READY', title: 'Connecting to live market feed', detail: 'Waiting for public Deriv tick data.', tone: 'blue' },
   ]);
@@ -194,6 +210,60 @@ function Home() {
     setActivityEntries((entries) => [{ id, time, title, detail, tone }, ...entries].slice(0, 30));
     setLastAction(title);
   };
+
+  const publishPredictionOutcome = (outcome: PredictionOutcomeRecord) => {
+    setPredictionOutcomes((current) => [
+      outcome,
+      ...current.filter((item) => item.id !== outcome.id),
+    ].slice(0, 8));
+  };
+
+  const finishPredictionOutcome = (status: 'complete' | 'replaced') => {
+    const outcome = activePredictionOutcomeRef.current;
+    if (!outcome) {
+      return;
+    }
+
+    if (predictionOutcomeTimeoutRef.current !== undefined) {
+      window.clearTimeout(predictionOutcomeTimeoutRef.current);
+      predictionOutcomeTimeoutRef.current = undefined;
+    }
+    publishPredictionOutcome({ ...outcome, status });
+    activePredictionOutcomeRef.current = null;
+  };
+
+  const startPredictionOutcome = (prediction: PredictionOutcomeStart) => {
+    finishPredictionOutcome('replaced');
+    const outcome: PredictionOutcomeRecord = {
+      ...prediction,
+      wins: 0,
+      losses: 0,
+      observedTicks: 0,
+      status: 'tracking',
+    };
+    activePredictionOutcomeRef.current = outcome;
+    publishPredictionOutcome(outcome);
+    predictionOutcomeTimeoutRef.current = window.setTimeout(() => {
+      if (activePredictionOutcomeRef.current?.id === outcome.id) {
+        finishPredictionOutcome('complete');
+      }
+    }, Math.max(0, prediction.expiresAt - Date.now()));
+  };
+
+  const resetPredictionOutcomes = () => {
+    if (predictionOutcomeTimeoutRef.current !== undefined) {
+      window.clearTimeout(predictionOutcomeTimeoutRef.current);
+      predictionOutcomeTimeoutRef.current = undefined;
+    }
+    activePredictionOutcomeRef.current = null;
+    setPredictionOutcomes([]);
+  };
+
+  useEffect(() => () => {
+    if (predictionOutcomeTimeoutRef.current !== undefined) {
+      window.clearTimeout(predictionOutcomeTimeoutRef.current);
+    }
+  }, []);
 
   const selectMarket = (symbol: string) => {
     const selectedMarket = markets.find((item) => item.symbol === symbol);
@@ -472,9 +542,13 @@ function Home() {
     const requestIdToSymbol = new Map<number, string>();
     const pipSizeBySymbol = new Map<string, number>();
     const ticksBySymbol = new Map<string, LiveTick[]>();
+    const tickVersionsBySymbol = new Map<string, number>();
 
     setScannerFeedStatus('connecting');
     setScannerFeedError(null);
+    setScannerTickVersionsByMarket(
+      Object.fromEntries(volatilityMarkets.map((item) => [item.symbol, 0])),
+    );
     setScannerTicksByMarket(
       Object.fromEntries(volatilityMarkets.map((item) => [item.symbol, []])),
     );
@@ -612,10 +686,35 @@ function Home() {
         if (message.tick?.quote !== undefined) {
           const quote = getQuoteDetails(message.tick.quote, pipSize);
           if (quote) {
+            const predictionOutcome = activePredictionOutcomeRef.current;
+            if (predictionOutcome?.marketSymbol === symbol) {
+              if (Date.now() >= predictionOutcome.expiresAt) {
+                finishPredictionOutcome('complete');
+              } else {
+                const won = isContractWin(
+                  predictionOutcome.contractType,
+                  predictionOutcome.signalKey,
+                  predictionOutcome.digit,
+                  quote.lastDigit,
+                );
+                const updatedOutcome: PredictionOutcomeRecord = {
+                  ...predictionOutcome,
+                  wins: predictionOutcome.wins + Number(won),
+                  losses: predictionOutcome.losses + Number(!won),
+                  observedTicks: predictionOutcome.observedTicks + 1,
+                };
+                activePredictionOutcomeRef.current = updatedOutcome;
+                publishPredictionOutcome(updatedOutcome);
+              }
+            }
+
             const ticks = [...(ticksBySymbol.get(symbol) ?? []), { price: quote.price, digit: quote.lastDigit }]
               .slice(-TICK_WINDOW_SIZE);
             ticksBySymbol.set(symbol, ticks);
+            const tickVersion = (tickVersionsBySymbol.get(symbol) ?? 0) + 1;
+            tickVersionsBySymbol.set(symbol, tickVersion);
             setScannerTicksByMarket((current) => ({ ...current, [symbol]: ticks }));
+            setScannerTickVersionsByMarket((current) => ({ ...current, [symbol]: tickVersion }));
             setScannerFeedStatus('live');
             setScannerFeedError(null);
             reconnectAttempt = 0;
@@ -979,6 +1078,58 @@ function Home() {
                   </div>
                 </section>
 
+                <section data-testid="prediction-outcome-history" aria-label="Scanned prediction outcome history" className="rounded-lg border border-[#087b78] bg-[#031c21] p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <h3 className="font-mono-ui text-[9px] font-bold tracking-[.12em] text-[#f6cf31]">DATA ANALYSIS</h3>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono-ui text-[7px] text-[#829b91]">30-SECOND LIVE OUTCOMES</span>
+                      <button
+                        type="button"
+                        onClick={resetPredictionOutcomes}
+                        disabled={predictionOutcomes.length === 0}
+                        data-testid="button-reset-prediction-results"
+                        className="rounded border border-[#526171] px-2 py-1 font-mono-ui text-[7px] font-bold text-[#aebdca] transition hover:border-[#d98989] hover:text-[#ffaaaa] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        RESET
+                      </button>
+                    </div>
+                  </div>
+                  {predictionOutcomes.length > 0 ? (
+                    <ol className="space-y-1.5">
+                      {predictionOutcomes.map((outcome) => {
+                        const hitRate = outcome.observedTicks > 0
+                          ? `${((outcome.wins / outcome.observedTicks) * 100).toFixed(1)}%`
+                          : '--';
+                        const contractLabel = {
+                          'match-digit': 'MATCHES',
+                          differ: 'DIFFERS',
+                          over: 'OVER',
+                          under: 'UNDER',
+                          'even-odd': 'EVEN / ODD',
+                        }[outcome.contractType];
+                        return (
+                          <li key={outcome.id} data-testid={`prediction-outcome-${outcome.id}`} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-[#17483b] bg-[#061a1b] px-2.5 py-2">
+                            <span className="min-w-0 flex-1">
+                              <strong className="block truncate text-[9px] text-[#dce8e4]">{outcome.marketLabel} · {outcome.signalLabel}</strong>
+                              <span className="font-mono-ui text-[7px] text-[#829b91]">{outcome.marketSymbol} · {contractLabel}</span>
+                            </span>
+                            <span className="text-right">
+                              <strong className="block font-mono-ui text-[9px] text-[#6de4dc]">{outcome.wins}/{outcome.observedTicks} · {hitRate}</strong>
+                              <span className={`font-mono-ui text-[7px] ${outcome.status === 'tracking' ? 'text-[#e0c365]' : 'text-[#829b91]'}`}>
+                                {outcome.status === 'tracking' ? 'TRACKING' : outcome.status === 'replaced' ? 'ENDED BY NEW SCAN' : 'COMPLETE'}
+                                {outcome.observedTicks > 0 ? ` · ${outcome.losses} misses` : ''}
+                              </span>
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  ) : (
+                    <p className="text-[9px] text-[#82939a]">Each scan’s selected contract is checked against live ticks for 30 seconds.</p>
+                  )}
+                  <p className="mt-2 font-mono-ui text-[7px] leading-relaxed text-[#6f8792]">Success rate is wins divided by observed live ticks for the scanned contract signal; it is a record of outcomes, not a future guarantee.</p>
+                </section>
+
                 <section className="analysis-card card-gold rounded-xl border border-[#30404c] bg-[#101b24]/90 p-3 sm:p-4">
                   <div className="mb-3 flex items-start justify-between gap-2">
                     <div>
@@ -1003,7 +1154,7 @@ function Home() {
 
             <footer className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[#293944] pt-3">
               <p data-testid="status-data-disclaimer" className="flex items-center gap-1.5 text-[9px] text-[#82939a]"><ShieldCheck size={12} className="text-[#62c9ae]" /> Live market data only; digit percentages describe recent ticks, not predictions or advice.</p>
-              <button type="button" onClick={() => setNotice('Digit percentages use the most recent 1,000 ticks received from the selected market. They are descriptive and not predictions.')} data-testid="button-data-info" className="flex items-center gap-1.5 text-[9px] font-bold tracking-[.05em] text-[#73b8c3] transition hover:text-[#a6edf0]"><CircleHelp size={12} /> ABOUT DIGIT DATA</button>
+              <button type="button" onClick={() => setNotice('Digit percentages summarize the recent 1,000 ticks. Scanned prediction results count actual live contract wins and misses for 30 seconds after each pick. The scanner only displays picks whose walk-forward confidence bound exceeds the contract baseline; past outcomes do not guarantee future results.')} data-testid="button-data-info" className="flex items-center gap-1.5 text-[9px] font-bold tracking-[.05em] text-[#73b8c3] transition hover:text-[#a6edf0]"><CircleHelp size={12} /> DATA ANALYSIS</button>
             </footer>
           </div>
         </section>
@@ -1013,11 +1164,13 @@ function Home() {
             markets={volatilityMarkets.map((item) => ({
               ...item,
               ticks: scannerTicksByMarket[item.symbol] ?? [],
+              tickVersion: scannerTickVersionsByMarket[item.symbol] ?? 0,
             }))}
             contractType={settings.contractType}
             feedStatus={scannerFeedStatus}
             feedError={scannerFeedError}
             onMarketSelect={selectMarket}
+            onPredictionStart={startPredictionOutcome}
           />
         </section>
         </div>
