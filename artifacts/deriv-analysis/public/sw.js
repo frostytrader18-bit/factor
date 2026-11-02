@@ -1,4 +1,4 @@
-const CACHE_NAME = 'd-pulse-shell-v1';
+const CACHE_NAME = 'one-market-shell-v1';
 const APP_SHELL = [
   './',
   './index.html',
@@ -21,7 +21,10 @@ self.addEventListener('activate', (event) => {
     caches.keys()
       .then((cacheNames) => Promise.all(
         cacheNames
-          .filter((cacheName) => cacheName.startsWith('d-pulse-shell-') && cacheName !== CACHE_NAME)
+          .filter((cacheName) =>
+            (cacheName.startsWith('one-market-shell-') || cacheName.startsWith('d-pulse-shell-'))
+            && cacheName !== CACHE_NAME,
+          )
           .map((cacheName) => caches.delete(cacheName)),
       ))
       .then(() => self.clients.claim()),

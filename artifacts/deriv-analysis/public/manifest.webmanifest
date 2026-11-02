@@ -1,8 +1,8 @@
 {
   "id": ".",
-  "name": "D-PULSE",
-  "short_name": "D-PULSE",
-  "description": "D-PULSE live market analysis and digit scanner.",
+  "name": "ONE-MARKET",
+  "short_name": "ONE-MARKET",
+  "description": "ONE-MARKET live market analysis and digit scanner.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",

@@ -216,7 +216,7 @@ function Home() {
     if ('serviceWorker' in navigator) {
       void navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`)
         .catch((error: unknown) => {
-          console.error('Unable to register the D-PULSE offline app shell.', error);
+          console.error('Unable to register the ONE-MARKET offline app shell.', error);
         });
     }
 
@@ -227,7 +227,7 @@ function Home() {
     const handleAppInstalled = () => {
       setIsAppInstalled(true);
       setInstallPromptEvent(null);
-      setNotice('D-PULSE installed.');
+      setNotice('ONE-MARKET installed.');
     };
 
     setIsAppInstalled(window.matchMedia('(display-mode: standalone)').matches);
@@ -313,7 +313,7 @@ function Home() {
 
   const installApp = async () => {
     if (!installPromptEvent) {
-      setNotice('To install D-PULSE, open your browser menu and select Install app or Add to Home Screen.');
+      setNotice('To install ONE-MARKET, open your browser menu and select Install app or Add to Home Screen.');
       return;
     }
 
@@ -322,11 +322,11 @@ function Home() {
       const { outcome } = await installPromptEvent.userChoice;
       setInstallPromptEvent(null);
       if (outcome === 'accepted') {
-        setNotice('D-PULSE is installing.');
+        setNotice('ONE-MARKET is installing.');
       }
     } catch (error) {
-      console.error('Unable to start D-PULSE installation.', error);
-      setNotice('D-PULSE could not be installed. Try the install option in your browser menu.');
+      console.error('Unable to start ONE-MARKET installation.', error);
+      setNotice('ONE-MARKET could not be installed. Try the install option in your browser menu.');
     }
   };
 
@@ -909,9 +909,9 @@ function Home() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-display text-[22px] font-bold leading-none tracking-[.09em] text-[#f2f0e9]">D-PULSE</span>
+                <span className="font-display text-[22px] font-bold leading-none tracking-[.09em] text-[#f2f0e9]">ONE-MARKET</span>
               </div>
-              <p className="mt-1 font-mono-ui text-[8px] tracking-[.12em] text-[#7f929e]">Powered by DBOTPULSE.SITE</p>
+              <p className="mt-1 font-mono-ui text-[8px] tracking-[.12em] text-[#7f929e]">LIVE MARKET ANALYSIS</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -1247,6 +1247,12 @@ function Home() {
               <div className="flex items-center justify-between gap-2 rounded-md bg-[#0c171d] px-2.5 py-2"><span className="flex items-center gap-2 text-[10px] text-[#a5b4bb]"><Signal size={13} className="text-[#58b8dc]" /> Bot synchronization</span><span className="font-mono-ui text-[8px] tracking-wider text-[#8a9aa1]">NOT CONNECTED</span></div>
               <div className="flex items-start gap-2 rounded-md border border-[#273842] bg-[#0c171d] px-2.5 py-2.5"><span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#43cdc2]" /><div className="min-w-0"><p data-testid="text-latest-log" className="truncate text-[10px] text-[#b8c8ce]">{lastAction}</p><p className="mt-1 font-mono-ui text-[8px] tracking-wider text-[#637780]">LOCAL UI EVENT · PUBLIC MARKET FEED</p></div><span className="ml-auto shrink-0 font-mono-ui text-[8px] text-[#62767d]">NOW</span></div>
               <p className="flex items-start gap-1.5 px-1 pt-0.5 text-[9px] leading-relaxed text-[#7d8f98]"><AlertTriangle size={11} className="mt-0.5 shrink-0 text-[#c4a754]" /> {feedError ?? (feedStatus === 'live' ? `Receiving live ${market.label} ticks. No trading account is connected.` : 'Connecting to the public Deriv tick feed. No trading account is connected.')}</p>
+              <div className="flex items-center gap-1.5 border-t border-[#273842] px-1 pt-2 font-mono-ui text-[9px] text-[#7d8f98]">
+                <span>Powered by</span>
+                <a href="https://dbotpulse.site" target="_blank" rel="noopener noreferrer" className="rounded px-1 py-0.5 font-bold tracking-wider text-[#71e2d6] transition hover:bg-[#103334] hover:text-[#a0fff0] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71e2d6]">
+                  DBOTPULSE
+                </a>
+              </div>
             </div>}
           </section>
         </section>
