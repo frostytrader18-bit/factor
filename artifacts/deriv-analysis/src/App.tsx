@@ -20,6 +20,7 @@ import {
   ChevronDown,
   CircleHelp,
   Cpu,
+  Download,
   Gauge,
   Radio,
   RefreshCw,
@@ -46,6 +47,11 @@ import {
 const queryClient = new QueryClient();
 
 type WorkspaceTheme = 'ocean' | 'aurora' | 'ember' | 'cyberpunk' | 'obsidian';
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+}
+
 interface WorkspaceSettings {
   theme: WorkspaceTheme;
   contractType: ContractType;
@@ -176,6 +182,8 @@ function Home() {
   const [marketSymbol, setMarketSymbol] = useState<string>(DEFAULT_MARKETS[0].symbol);
   const [autoScan, setAutoScan] = useState(true);
   const [notice, setNotice] = useState('');
+  const [installPromptEvent, setInstallPromptEvent] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isAppInstalled, setIsAppInstalled] = useState(false);
   const [settings, setSettings] = useState<WorkspaceSettings>(readWorkspaceSettings);
   const [settingsDraft, setSettingsDraft] = useState<WorkspaceSettings>(settings);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -203,6 +211,33 @@ function Home() {
   useEffect(() => {
     document.documentElement.dataset.workspaceTheme = settings.theme;
   }, [settings.theme]);
+
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      void navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`)
+        .catch((error: unknown) => {
+          console.error('Unable to register the D-PULSE offline app shell.', error);
+        });
+    }
+
+    const handleInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPromptEvent(event as BeforeInstallPromptEvent);
+    };
+    const handleAppInstalled = () => {
+      setIsAppInstalled(true);
+      setInstallPromptEvent(null);
+      setNotice('D-PULSE installed.');
+    };
+
+    setIsAppInstalled(window.matchMedia('(display-mode: standalone)').matches);
+    window.addEventListener('beforeinstallprompt', handleInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
 
   const recordActivity = (title: string, detail: string, tone: ActivityRecord['tone'] = 'cyan') => {
     const id = activitySequence.current++;
@@ -274,6 +309,25 @@ function Home() {
     setLiveMarketData(EMPTY_LIVE_MARKET_DATA);
     setMarketSymbol(selectedMarket.symbol);
     recordActivity('Live market changed', `Subscribing to ${selectedMarket.label}.`, 'cyan');
+  };
+
+  const installApp = async () => {
+    if (!installPromptEvent) {
+      setNotice('To install D-PULSE, open your browser menu and select Install app or Add to Home Screen.');
+      return;
+    }
+
+    try {
+      await installPromptEvent.prompt();
+      const { outcome } = await installPromptEvent.userChoice;
+      setInstallPromptEvent(null);
+      if (outcome === 'accepted') {
+        setNotice('D-PULSE is installing.');
+      }
+    } catch (error) {
+      console.error('Unable to start D-PULSE installation.', error);
+      setNotice('D-PULSE could not be installed. Try the install option in your browser menu.');
+    }
   };
 
   useEffect(() => {
@@ -855,12 +909,17 @@ function Home() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-display text-[22px] font-bold leading-none tracking-[.09em] text-[#f2f0e9]">DERIV<span className="brand-slash"> / </span>CONSOLE</span>
+                <span className="font-display text-[22px] font-bold leading-none tracking-[.09em] text-[#f2f0e9]">D-PULSE</span>
               </div>
-              <p className="mt-1 font-mono-ui text-[8px] tracking-[.12em] text-[#7f929e]">ONE WORKSPACE · LIVE MARKETS · MANUAL SCANNER</p>
+              <p className="mt-1 font-mono-ui text-[8px] tracking-[.12em] text-[#7f929e]">Powered by DBOTPULSE.SITE</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {!isAppInstalled && (
+              <button type="button" onClick={installApp} data-testid="button-install-app" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#1c7778]/60 bg-[#103334]/70 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#71e2d6] transition hover:border-[#54d8d6] hover:bg-[#164348] sm:px-3">
+                <Download size={13} /> INSTALL APP
+              </button>
+            )}
             <div data-testid="status-market-feed" aria-live="polite" className="preview-badge flex items-center gap-2 rounded-full border border-[#1d7577]/55 bg-[#0d3338]/50 px-3 py-1.5">
               <span className={`pulse-dot h-1.5 w-1.5 rounded-full ${feedStatus === 'live' ? 'bg-[#42d8d2]' : feedStatus === 'error' ? 'bg-[#ef4444]' : 'bg-[#d6ad51]'}`} />
               <span className="font-mono-ui text-[10px] tracking-[.12em] text-[#6de4dc]">{feedStatusLabel}</span>
@@ -1074,7 +1133,6 @@ function Home() {
                     ) : (
                       <p className="text-[10px] text-[#82939a]">Waiting for live ticks to summarize the sample.</p>
                     )}
-                    <p className="mt-2 font-mono-ui text-[7px] leading-relaxed text-[#6f8792]">Descriptive history only; not a prediction of future ticks.</p>
                   </div>
                 </section>
 
@@ -1127,7 +1185,7 @@ function Home() {
                   ) : (
                     <p className="text-[9px] text-[#82939a]">Each scan’s selected contract is checked against live ticks for 30 seconds.</p>
                   )}
-                  <p className="mt-2 font-mono-ui text-[7px] leading-relaxed text-[#6f8792]">Success rate is wins divided by observed live ticks for the scanned contract signal; it is a record of outcomes, not a future guarantee.</p>
+                  <p className="mt-2 font-mono-ui text-[7px] leading-relaxed text-[#6f8792]">Wins / observed ticks.</p>
                 </section>
 
                 <section className="analysis-card card-gold rounded-xl border border-[#30404c] bg-[#101b24]/90 p-3 sm:p-4">
@@ -1154,7 +1212,7 @@ function Home() {
 
             <footer className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[#293944] pt-3">
               <p data-testid="status-data-disclaimer" className="flex items-center gap-1.5 text-[9px] text-[#82939a]"><ShieldCheck size={12} className="text-[#62c9ae]" /> Live market data only; digit percentages describe recent ticks, not predictions or advice.</p>
-              <button type="button" onClick={() => setNotice('Digit percentages summarize the recent 1,000 ticks. Scanned prediction results count actual live contract wins and misses for 30 seconds after each pick. The scanner only displays picks whose walk-forward confidence bound exceeds the contract baseline; past outcomes do not guarantee future results.')} data-testid="button-data-info" className="flex items-center gap-1.5 text-[9px] font-bold tracking-[.05em] text-[#73b8c3] transition hover:text-[#a6edf0]"><CircleHelp size={12} /> DATA ANALYSIS</button>
+              <button type="button" onClick={() => setNotice('Digit percentages use the latest 1,000 ticks. Data Analysis records live outcomes for 30 seconds after each scan.')} data-testid="button-data-info" className="flex items-center gap-1.5 text-[9px] font-bold tracking-[.05em] text-[#73b8c3] transition hover:text-[#a6edf0]"><CircleHelp size={12} /> DATA ANALYSIS</button>
             </footer>
           </div>
         </section>

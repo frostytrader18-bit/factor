@@ -361,7 +361,7 @@ export function DigitScannerView({
         if (finalResults.length === 0) {
           setActivePrediction(null);
           setPredictionSecondsRemaining(0);
-          setScanMessage(`No statistically supported ${contractLabel} signal this scan. Fresh ticks arrived from ${scanTicksByMarket.size}/${marketsRef.current.length} markets; only picks with a walk-forward confidence bound above the contract baseline are shown.`);
+          setScanMessage(`No qualified ${contractLabel} signal. Fresh ticks: ${scanTicksByMarket.size}/${marketsRef.current.length}.`);
           return;
         }
 
@@ -506,7 +506,7 @@ export function DigitScannerView({
               {scanMessage
                 ?? (lastManualScan
                   ? `Latest manual scan: ${lastManualScan}`
-                  : 'Press SCAN NOW to test current market performance and pick the top performer.')}
+                  : 'Press SCAN NOW to scan markets.')}
             </p>
           </section>
 
@@ -608,7 +608,7 @@ export function DigitScannerView({
                     <Activity size={20} className="mx-auto mb-2 text-[#56d5cb]" />
                     <p className="text-[11px] font-bold text-[#dce6ef]">{scanMessage ? 'No qualified market found' : 'No market picked yet'}</p>
                     <p className="mt-1 text-[9px] text-[#82939a]">
-                      {scanMessage ?? `${readyMarkets} of ${totalMarkets} markets have enough out-of-sample calls. Press SCAN NOW to compare performance.`}
+                      {scanMessage ?? `${readyMarkets}/${totalMarkets} markets ready. Press SCAN NOW to begin.`}
                     </p>
                   </>
                 )}
@@ -644,9 +644,9 @@ export function DigitScannerView({
               <p data-testid="scanner-signal-status" className={`mt-2 text-[9px] font-bold ${edgeValidated ? 'text-[#72d7aa]' : 'text-[#d7b966]'}`}>
                 {displayedPrediction
                   ? edgeValidated
-                    ? `Top performer has a statistically supported edge over the ${(displayedPrediction.baselineRate * 100).toFixed(0)}% contract baseline.`
-                    : `Top performer by conservative walk-forward estimate; edge over its ${(displayedPrediction.baselineRate * 100).toFixed(0)}% contract baseline is not statistically confirmed.`
-                  : 'No market recommendation until you run a manual scan.'}
+                    ? 'Edge confirmed by walk-forward test.'
+                    : 'Edge not confirmed.'
+                  : 'Run a scan to select a market.'}
               </p>
             </div>
           </section>
@@ -676,8 +676,8 @@ export function DigitScannerView({
             ) : (
               <p className="rounded-md border border-[#27344d] bg-[#0c1421] px-3 py-5 text-center text-[9px] text-[#82939a]">
                 {scanResults
-                  ? `No market showed a statistically supported edge above the ${contractLabel.toLowerCase()} baseline.`
-                  : 'No recommendation yet. Press SCAN NOW to rank markets using current walk-forward results.'}
+                  ? 'No qualified market found.'
+                  : 'Press SCAN NOW to scan markets.'}
               </p>
             )}
           </section>
@@ -702,7 +702,6 @@ export function DigitScannerView({
             </section>
           </div>
 
-          <p data-testid="scanner-method-note" className="flex items-start gap-1.5 px-1 text-[8px] leading-relaxed text-[#72839a]"><ShieldCheck size={11} className="mt-0.5 shrink-0 text-[#62c9ae]" /> Each manual scan evaluates {contractLabel} across all tracked markets in parallel for 10 seconds. Picks remain visible for 30 seconds; ranking favors conservative walk-forward results. Historical rates are not guaranteed future probabilities. Data only; no contracts are purchased or traded.</p>
         </div>
       </section>
     </section>

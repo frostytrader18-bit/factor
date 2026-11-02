@@ -1,0 +1,26 @@
+{
+  "id": ".",
+  "name": "D-PULSE",
+  "short_name": "D-PULSE",
+  "description": "D-PULSE live market analysis and digit scanner.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#071620",
+  "theme_color": "#071620",
+  "icons": [
+    {
+      "src": "./icons/d-pulse-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/d-pulse-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
