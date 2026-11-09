@@ -1,39 +1,26 @@
 import { useEffect, useRef, useState } from 'react';
 import { Activity, Clock3, ShieldCheck, Signal, Target, Wifi } from 'lucide-react';
-
-type LiveTick = {
-  price: string;
-  digit: number;
-};
+import {
+  MIN_OUT_OF_SAMPLE_CALLS,
+  MIN_TRAINING_TICKS,
+  FRESH_SCAN_TICK_COUNT,
+  SCANNER_PRIOR_TICK_COUNT,
+  isContractWin,
+  scanMarkets,
+  type ContractSignal,
+  type ContractType,
+  type LiveTick,
+  type MarketCandidate,
+  type ScannedMarket,
+} from '@/lib/analysis-engine';
+import type { AnalysisEngineConfiguration } from '@/lib/contract-engines';
+import type { PredictionOutcomeStart } from '@/lib/performance';
 
 type FeedStatus = 'connecting' | 'live' | 'reconnecting' | 'error';
-export type ContractType = 'match-digit' | 'differ' | 'over' | 'under' | 'even-odd';
-
-type ContractSignal = {
-  signalKey: string;
-  signalLabel: string;
-  digit: number | null;
-  baselineRate: number;
-  recentOccurrences: number;
-  recentSampleSize: number;
-  analyzedTickCount: number;
-  analyzedWindowOccurrences: number;
-};
-
-type ScannedMarket = {
-  symbol: string;
-  label: string;
-  ticks: LiveTick[];
-  tickVersion: number;
-};
-
-type MarketCandidate = ScannedMarket & ContractSignal & {
-  scanTicks: LiveTick[];
-  backtestHits: number;
-  backtestPredictions: number;
-  backtestAccuracy: number;
-  wilsonLowerBound: number;
-};
+type ScannerSoundAlert = 'signal-found' | 'timer-ended';
+export type { ContractType } from '@/lib/analysis-engine';
+export type { PredictionOutcomeStart } from '@/lib/performance';
+export { isContractWin };
 
 type ActivePrediction = ContractSignal & {
   contractType: ContractType;
@@ -44,15 +31,9 @@ type ActivePrediction = ContractSignal & {
   backtestPredictions: number;
   backtestAccuracy: number;
   wilsonLowerBound: number;
+  wilsonUpperBound: number;
+  isValidated: boolean;
   expiresAt: number;
-};
-
-export type PredictionOutcomeStart = Pick<
-  ActivePrediction,
-  'contractType' | 'signalKey' | 'signalLabel' | 'digit' | 'marketSymbol' | 'marketLabel' | 'expiresAt'
-> & {
-  id: string;
-  startedAt: number;
 };
 
 type DigitScannerViewProps = {
@@ -60,133 +41,16 @@ type DigitScannerViewProps = {
   contractType: ContractType;
   feedStatus: FeedStatus;
   feedError: string | null;
+  configuration: AnalysisEngineConfiguration;
   onMarketSelect: (symbol: string) => void;
   onPredictionStart: (prediction: PredictionOutcomeStart) => void;
+  onSoundAlert: (alert: ScannerSoundAlert) => void;
 };
 
-const DIGIT_COUNT = 10;
-const BASE_RATE = 1 / DIGIT_COUNT;
-const MIN_TRAINING_TICKS = 100;
-const MIN_OUT_OF_SAMPLE_CALLS = 100;
-const MIN_DIGIT_TEST_CALLS = 10;
-const MIN_FRESH_SCAN_TICKS = 1;
-const BACKTEST_LIMIT = 250;
-const RECENT_ANALYSIS_TICKS = 20;
-const RECENT_DIGIT_WINDOW = 10;
-const SCANNER_COUNTDOWN_SECONDS = 10;
+const TICK_COLLECTION_SECONDS = 10;
+const DECISION_PHASE_SECONDS = 5;
+const SCANNER_COUNTDOWN_SECONDS = TICK_COLLECTION_SECONDS + DECISION_PHASE_SECONDS;
 const PREDICTION_VALIDITY_SECONDS = 30;
-
-type OverUnderStrategy = {
-  direction: 'over' | 'under';
-  barrier: number;
-  baselineRate: number;
-};
-
-export function isContractWin(
-  contractType: ContractType,
-  signalKey: string,
-  signalDigit: number | null,
-  digit: number,
-) {
-  switch (contractType) {
-    case 'match-digit':
-      return digit === signalDigit;
-    case 'differ':
-      return digit !== signalDigit;
-    case 'over':
-      return digit > (signalDigit ?? 9);
-    case 'under':
-      return digit < (signalDigit ?? 0);
-    case 'even-odd':
-      return signalKey === (digit % 2 === 0 ? 'even' : 'odd');
-  }
-  return false;
-}
-
-function getOverUnderStrategy(contractType: ContractType): OverUnderStrategy | null {
-  if (contractType === 'over') {
-    return { direction: 'over', barrier: 3, baselineRate: 0.6 };
-  }
-  if (contractType === 'under') {
-    return { direction: 'under', barrier: 6, baselineRate: 0.6 };
-  }
-  return null;
-}
-
-function getContractSignal(
-  ticks: LiveTick[],
-  contractType: ContractType,
-  overUnderStrategy: OverUnderStrategy | null,
-  signalWindowSize = RECENT_DIGIT_WINDOW,
-): ContractSignal | null {
-  const analysisTicks = ticks.slice(-RECENT_ANALYSIS_TICKS);
-  const recentTicks = analysisTicks.slice(-signalWindowSize);
-  if (recentTicks.length === 0) {
-    return null;
-  }
-
-  let signalKey: string;
-  let signalLabel: string;
-  let digit: number | null;
-  let baselineRate: number;
-  if (contractType === 'match-digit' || contractType === 'differ') {
-    const counts = Array(DIGIT_COUNT).fill(0) as number[];
-    for (const tick of recentTicks) counts[tick.digit] += 1;
-    digit = recentTicks[recentTicks.length - 1].digit;
-    for (const tick of recentTicks) {
-      if (counts[tick.digit] > counts[digit]) digit = tick.digit;
-    }
-    signalKey = String(digit);
-    signalLabel = contractType === 'match-digit' ? `MATCH ${digit}` : `DIFFERS FROM ${digit}`;
-    baselineRate = contractType === 'match-digit' ? BASE_RATE : 1 - BASE_RATE;
-  } else if (contractType === 'even-odd') {
-    const evenCount = recentTicks.filter((tick) => tick.digit % 2 === 0).length;
-    const latestParity = recentTicks[recentTicks.length - 1].digit % 2 === 0 ? 'even' : 'odd';
-    signalKey = evenCount * 2 === recentTicks.length ? latestParity : evenCount * 2 > recentTicks.length ? 'even' : 'odd';
-    signalLabel = signalKey.toUpperCase();
-    digit = null;
-    baselineRate = 0.5;
-  } else {
-    if (!overUnderStrategy) return null;
-    signalKey = `${overUnderStrategy.direction}-${overUnderStrategy.barrier}`;
-    signalLabel = `${overUnderStrategy.direction.toUpperCase()} ${overUnderStrategy.barrier}`;
-    digit = overUnderStrategy.barrier;
-    baselineRate = overUnderStrategy.baselineRate;
-  }
-
-  const signalBase = { signalKey, signalLabel, digit, baselineRate };
-  return {
-    ...signalBase,
-    recentOccurrences: recentTicks.filter((tick) => isContractWin(contractType, signalKey, digit, tick.digit)).length,
-    recentSampleSize: recentTicks.length,
-    analyzedTickCount: analysisTicks.length,
-    analyzedWindowOccurrences: analysisTicks.filter((tick) => isContractWin(contractType, signalKey, digit, tick.digit)).length,
-  };
-}
-
-function getWalkForwardResults(
-  ticks: LiveTick[],
-  contractType: ContractType,
-  overUnderStrategy: OverUnderStrategy | null,
-  signalWindowSize = RECENT_DIGIT_WINDOW,
-) {
-  const firstTestIndex = Math.max(MIN_TRAINING_TICKS, ticks.length - BACKTEST_LIMIT);
-  let predictions = 0;
-  const signalResults = new Map<string, { hits: number; predictions: number }>();
-
-  for (let index = firstTestIndex; index < ticks.length; index += 1) {
-    const candidate = getContractSignal(ticks.slice(0, index), contractType, overUnderStrategy, signalWindowSize);
-    if (!candidate) continue;
-
-    const result = signalResults.get(candidate.signalKey) ?? { hits: 0, predictions: 0 };
-    predictions += 1;
-    result.predictions += 1;
-    if (isContractWin(contractType, candidate.signalKey, candidate.digit, ticks[index].digit)) result.hits += 1;
-    signalResults.set(candidate.signalKey, result);
-  }
-
-  return { predictions, signalResults };
-}
 
 function formatPercent(value: number | null) {
   return value === null ? '--' : `${(value * 100).toFixed(1)}%`;
@@ -196,63 +60,11 @@ function formatCountdown(seconds: number) {
   return seconds.toString().padStart(2, '0');
 }
 
-function scanMarkets(
-  markets: ScannedMarket[],
-  contractType: ContractType,
-  scanTicksByMarket: Map<string, LiveTick[]>,
-): MarketCandidate[] {
-  return markets
-    .flatMap((market) => {
-      const scanTicks = scanTicksByMarket.get(market.symbol);
-      if (!scanTicks || scanTicks.length < MIN_FRESH_SCAN_TICKS) {
-        return [];
-      }
-      if (market.ticks.length < MIN_TRAINING_TICKS + MIN_OUT_OF_SAMPLE_CALLS) {
-        return [];
-      }
-
-      const overUnderStrategy = getOverUnderStrategy(contractType);
-      const signalWindowSize = Math.min(scanTicks.length, RECENT_DIGIT_WINDOW);
-      const backtest = getWalkForwardResults(market.ticks, contractType, overUnderStrategy, signalWindowSize);
-      if (backtest.predictions < MIN_OUT_OF_SAMPLE_CALLS) {
-        return [];
-      }
-      const recentCandidate = getContractSignal(scanTicks, contractType, overUnderStrategy, signalWindowSize);
-      if (!recentCandidate) {
-        return [];
-      }
-      const result = backtest.signalResults.get(recentCandidate.signalKey);
-      if (!result || result.predictions < MIN_DIGIT_TEST_CALLS) {
-        return [];
-      }
-
-      const accuracy = result.hits / result.predictions;
-      const z = 1.96;
-      const wilsonLowerBound = (
-        accuracy
-        + (z * z) / (2 * result.predictions)
-        - z * Math.sqrt((accuracy * (1 - accuracy) + (z * z) / (4 * result.predictions)) / result.predictions)
-      ) / (1 + (z * z) / result.predictions);
-      if (wilsonLowerBound <= recentCandidate.baselineRate) {
-        return [];
-      }
-
-      return [{
-        ...market,
-        scanTicks,
-        ...recentCandidate,
-        backtestHits: result.hits,
-        backtestPredictions: result.predictions,
-        backtestAccuracy: accuracy,
-        wilsonLowerBound,
-      }];
-    })
-    .sort((left, right) => (
-      right.wilsonLowerBound - left.wilsonLowerBound
-      || right.backtestPredictions - left.backtestPredictions
-      || right.backtestAccuracy - left.backtestAccuracy
-      || right.recentOccurrences / right.recentSampleSize - left.recentOccurrences / left.recentSampleSize
-    ));
+function settingsDigitLabel(contractType: ContractType, targetDigit: number | null) {
+  const target = targetDigit === null
+    ? 'the most frequent digit in the analysis window'
+    : `configured digit ${targetDigit}`;
+  return contractType === 'differ' ? `DIFFERS from ${target}` : `target ${target}`;
 }
 
 export function DigitScannerView({
@@ -260,21 +72,24 @@ export function DigitScannerView({
   contractType,
   feedStatus,
   feedError,
+  configuration,
   onMarketSelect,
   onPredictionStart,
+  onSoundAlert,
 }: DigitScannerViewProps) {
   const [predictionSecondsRemaining, setPredictionSecondsRemaining] = useState(0);
   const [scanCountdownSeconds, setScanCountdownSeconds] = useState(0);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [scanPhase, setScanPhase] = useState<'idle' | 'collecting' | 'deciding'>('idle');
   const [activePrediction, setActivePrediction] = useState<ActivePrediction | null>(null);
   const [lastManualScan, setLastManualScan] = useState<string | null>(null);
   const [scanResults, setScanResults] = useState<MarketCandidate[] | null>(null);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const marketsRef = useRef(markets);
   const scanStartTickVersionsRef = useRef(new Map<string, number>());
-  const callbacksRef = useRef({ onMarketSelect, onPredictionStart });
+  const callbacksRef = useRef({ onMarketSelect, onPredictionStart, onSoundAlert });
   marketsRef.current = markets;
-  callbacksRef.current = { onMarketSelect, onPredictionStart };
+  callbacksRef.current = { onMarketSelect, onPredictionStart, onSoundAlert };
   const feedStatusLabel = feedStatus === 'live'
     ? 'LIVE'
     : feedStatus === 'reconnecting'
@@ -290,16 +105,18 @@ export function DigitScannerView({
     under: 'UNDER',
     'even-odd': 'EVEN / ODD',
   }[contractType];
-  const readyMarkets = markets.filter(
-    (market) => market.ticks.length >= MIN_TRAINING_TICKS + MIN_OUT_OF_SAMPLE_CALLS,
-  ).length;
+  const readyMarkets = markets.filter((market) => (
+    market.ticks.length >= Math.max(
+      MIN_TRAINING_TICKS,
+      SCANNER_PRIOR_TICK_COUNT + FRESH_SCAN_TICK_COUNT,
+    ) + MIN_OUT_OF_SAMPLE_CALLS
+  )).length;
   const rankedMarkets = scanResults ?? [];
   const topResult = rankedMarkets[0] ?? null;
   const predictionIsActive = feedStatus === 'live' && predictionSecondsRemaining > 0;
   const displayedPrediction = predictionIsActive ? activePrediction : null;
   const edgeValidated = displayedPrediction !== null
-    && displayedPrediction.backtestPredictions >= MIN_OUT_OF_SAMPLE_CALLS
-    && displayedPrediction.wilsonLowerBound > displayedPrediction.baselineRate;
+    && displayedPrediction.isValidated;
 
   useEffect(() => {
     setActivePrediction(null);
@@ -310,7 +127,8 @@ export function DigitScannerView({
       setIsAnalyzing(false);
       setScanCountdownSeconds(0);
     }
-  }, [contractType]);
+    setScanPhase('idle');
+  }, [configuration, contractType]);
 
   const initiateManualScan = () => {
     if (feedStatus !== 'live' || isAnalyzing) {
@@ -323,7 +141,8 @@ export function DigitScannerView({
     scanStartTickVersionsRef.current = new Map(
       marketsRef.current.map((market) => [market.symbol, market.tickVersion]),
     );
-    setScanMessage(`Collecting fresh market ticks for ${SCANNER_COUNTDOWN_SECONDS}s. Previous results are hidden until this scan completes.`);
+    setScanMessage(`Collecting 10 fresh ticks for 10s, then analyzing 100 prior + 10 fresh ticks for 5s.`);
+    setScanPhase('collecting');
     setScanCountdownSeconds(SCANNER_COUNTDOWN_SECONDS);
     setIsAnalyzing(true);
   };
@@ -335,79 +154,172 @@ export function DigitScannerView({
 
     if (feedStatus !== 'live') {
       setIsAnalyzing(false);
+      setScanPhase('idle');
       setScanCountdownSeconds(0);
       setScanMessage('Scan canceled because the live feed disconnected. Reconnect and scan again.');
       return;
     }
 
-    const deadline = Date.now() + SCANNER_COUNTDOWN_SECONDS * 1000;
-    const timer = window.setInterval(() => {
-      const secondsRemaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-      setScanCountdownSeconds(secondsRemaining);
-      if (secondsRemaining === 0) {
-        window.clearInterval(timer);
-        setIsAnalyzing(false);
-        setLastManualScan(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-        const scanTicksByMarket = new Map<string, LiveTick[]>();
-        for (const market of marketsRef.current) {
-          const freshTickCount = market.tickVersion
-            - (scanStartTickVersionsRef.current.get(market.symbol) ?? market.tickVersion);
-          if (freshTickCount >= MIN_FRESH_SCAN_TICKS) {
-            scanTicksByMarket.set(market.symbol, market.ticks.slice(-Math.min(freshTickCount, market.ticks.length)));
-          }
-        }
-        const finalResults = scanMarkets(marketsRef.current, contractType, scanTicksByMarket);
-        const scannedMarketCount = scanTicksByMarket.size;
-        if (finalResults.length === 0) {
-          setActivePrediction(null);
-          setPredictionSecondsRemaining(0);
-          setScanMessage(`No qualified ${contractLabel} signal. Fresh ticks: ${scanTicksByMarket.size}/${marketsRef.current.length}.`);
-          return;
-        }
+    const scanStartedAt = Date.now();
+    const collectionDeadline = scanStartedAt + TICK_COLLECTION_SECONDS * 1000;
+    const finalDeadline = scanStartedAt + SCANNER_COUNTDOWN_SECONDS * 1000;
+    let decisionTimer: number | null = null;
+    let decisionStarted = false;
 
-        const topCandidate = finalResults[0];
-        setScanResults(finalResults);
-        setScanMessage(`Fresh ticks received from ${scannedMarketCount}/${marketsRef.current.length} markets; ranked ${finalResults.length} qualified markets by conservative walk-forward results. Historical rates are not guarantees.`);
-        const startedAt = Date.now();
-        const expiresAt = startedAt + PREDICTION_VALIDITY_SECONDS * 1000;
-        const outcomeStart: PredictionOutcomeStart = {
-          id: `${topCandidate.symbol}-${startedAt}`,
-          contractType,
-          signalKey: topCandidate.signalKey,
-          signalLabel: topCandidate.signalLabel,
-          digit: topCandidate.digit,
-          marketSymbol: topCandidate.symbol,
-          marketLabel: topCandidate.label,
-          startedAt,
-          expiresAt,
-        };
-        callbacksRef.current.onMarketSelect(topCandidate.symbol);
-        callbacksRef.current.onPredictionStart(outcomeStart);
-        setActivePrediction({
-          contractType,
-          signalKey: topCandidate.signalKey,
-          signalLabel: topCandidate.signalLabel,
-          digit: topCandidate.digit,
-          baselineRate: topCandidate.baselineRate,
-          recentOccurrences: topCandidate.recentOccurrences,
-          recentSampleSize: topCandidate.recentSampleSize,
-          analyzedTickCount: topCandidate.analyzedTickCount,
-          analyzedWindowOccurrences: topCandidate.analyzedWindowOccurrences,
-          analyzedTicks: topCandidate.scanTicks.slice(-RECENT_ANALYSIS_TICKS),
-          marketSymbol: topCandidate.symbol,
-          marketLabel: topCandidate.label,
-          backtestHits: topCandidate.backtestHits,
-          backtestPredictions: topCandidate.backtestPredictions,
-          backtestAccuracy: topCandidate.backtestAccuracy,
-          wilsonLowerBound: topCandidate.wilsonLowerBound,
-          expiresAt,
-        });
-        setPredictionSecondsRemaining(PREDICTION_VALIDITY_SECONDS);
+    const finishScan = (results: MarketCandidate[], scannedMarketCount: number) => {
+      setIsAnalyzing(false);
+      setScanPhase('idle');
+      setScanCountdownSeconds(0);
+      setLastManualScan(new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      }));
+      if (results.length === 0) {
+        setActivePrediction(null);
+        setPredictionSecondsRemaining(0);
+        setScanResults([]);
+        setScanMessage(
+          `Insufficient history or fresh ticks. Markets with 10 new ticks: ${scannedMarketCount}/${marketsRef.current.length}.`,
+        );
+        return;
       }
-    }, 250);
 
-    return () => window.clearInterval(timer);
-  }, [contractType, feedStatus, isAnalyzing]);
+      const topCandidate = results[0];
+      setScanResults(results);
+      setScanMessage(`Prediction: ${topCandidate.signalLabel} · ${topCandidate.label} · ${topCandidate.isValidated ? 'validated' : 'unconfirmed'} · ${scannedMarketCount}/${marketsRef.current.length} markets updated.`);
+      callbacksRef.current.onSoundAlert('signal-found');
+      const startedAt = Date.now();
+      const expiresAt = startedAt + PREDICTION_VALIDITY_SECONDS * 1000;
+      const outcomeStart: PredictionOutcomeStart = {
+        id: `${topCandidate.engineId}-${topCandidate.symbol}-${startedAt}`,
+        engineId: topCandidate.engineId,
+        contractType,
+        signalKey: topCandidate.signalKey,
+        signalLabel: topCandidate.signalLabel,
+        digit: topCandidate.digit,
+        marketSymbol: topCandidate.symbol,
+        marketLabel: topCandidate.label,
+        startedAt,
+        expiresAt,
+        baselineRate: topCandidate.baselineRate,
+        backtestHits: topCandidate.backtestHits,
+        backtestPredictions: topCandidate.backtestPredictions,
+        backtestAccuracy: topCandidate.backtestAccuracy,
+        estimatedProbability: topCandidate.estimatedProbability,
+        wilsonLowerBound: topCandidate.wilsonLowerBound,
+        wilsonUpperBound: topCandidate.wilsonUpperBound,
+        expectedValue: topCandidate.expectedValue,
+      };
+      callbacksRef.current.onPredictionStart(outcomeStart);
+      setActivePrediction({
+        contractType,
+        signalKey: topCandidate.signalKey,
+        signalLabel: topCandidate.signalLabel,
+        digit: topCandidate.digit,
+        baselineRate: topCandidate.baselineRate,
+        recentOccurrences: topCandidate.recentOccurrences,
+        recentSampleSize: topCandidate.recentSampleSize,
+        analyzedTickCount: topCandidate.analyzedTickCount,
+        analyzedWindowOccurrences: topCandidate.analyzedWindowOccurrences,
+        analyzedTicks: topCandidate.analyzedTicks,
+        marketSymbol: topCandidate.symbol,
+        marketLabel: topCandidate.label,
+        backtestHits: topCandidate.backtestHits,
+        backtestPredictions: topCandidate.backtestPredictions,
+        backtestAccuracy: topCandidate.backtestAccuracy,
+        wilsonLowerBound: topCandidate.wilsonLowerBound,
+        wilsonUpperBound: topCandidate.wilsonUpperBound,
+        isValidated: topCandidate.isValidated,
+        expiresAt,
+      });
+      setPredictionSecondsRemaining(PREDICTION_VALIDITY_SECONDS);
+      callbacksRef.current.onMarketSelect(topCandidate.symbol);
+    };
+
+    const startDecisionPhase = () => {
+      if (decisionStarted) return;
+      decisionStarted = true;
+      setScanPhase('deciding');
+      setScanCountdownSeconds(Math.max(
+        0,
+        Math.ceil((finalDeadline - Date.now()) / 1000),
+      ));
+      setScanMessage(
+        `Analyzing the prior ${SCANNER_PRIOR_TICK_COUNT} ticks plus ${FRESH_SCAN_TICK_COUNT} fresh ticks.`,
+      );
+
+      const scanTicksByMarket = new Map<string, LiveTick[]>();
+      for (const market of marketsRef.current) {
+        const freshTickCount = market.tickVersion
+          - (scanStartTickVersionsRef.current.get(market.symbol) ?? market.tickVersion);
+        if (freshTickCount >= FRESH_SCAN_TICK_COUNT
+          && freshTickCount <= market.ticks.length) {
+          scanTicksByMarket.set(market.symbol, market.ticks.slice(-freshTickCount));
+        }
+      }
+
+      let finalResults: MarketCandidate[];
+      try {
+        finalResults = scanMarkets(
+          marketsRef.current,
+          contractType,
+          scanTicksByMarket,
+          configuration,
+        );
+      } catch (error) {
+        console.error(`The ${contractLabel} analysis engine failed during a scan.`, error);
+        setIsAnalyzing(false);
+        setScanPhase('idle');
+        setScanCountdownSeconds(0);
+        setActivePrediction(null);
+        setPredictionSecondsRemaining(0);
+        setScanResults([]);
+        setScanMessage(
+          `DATA ERROR: the ${contractLabel} engine could not validate the current configuration or market data. Check the settings and retry.`,
+        );
+        return;
+      }
+
+      const scannedMarketCount = scanTicksByMarket.size;
+      const completeDecision = () => {
+        if (decisionTimer !== null) {
+          window.clearInterval(decisionTimer);
+          decisionTimer = null;
+        }
+        finishScan(finalResults, scannedMarketCount);
+      };
+      const updateDecisionTimer = () => {
+        const secondsRemaining = Math.max(
+          0,
+          Math.ceil((finalDeadline - Date.now()) / 1000),
+        );
+        setScanCountdownSeconds(secondsRemaining);
+        if (secondsRemaining === 0) completeDecision();
+      };
+      updateDecisionTimer();
+      if (Date.now() < finalDeadline) {
+        decisionTimer = window.setInterval(updateDecisionTimer, 100);
+      }
+    };
+
+    const collectionTimer = window.setInterval(() => {
+      const now = Date.now();
+      setScanCountdownSeconds(Math.max(
+        0,
+        Math.ceil((finalDeadline - now) / 1000),
+      ));
+      if (now >= collectionDeadline) {
+        window.clearInterval(collectionTimer);
+        startDecisionPhase();
+      }
+    }, 100);
+
+    return () => {
+      window.clearInterval(collectionTimer);
+      if (decisionTimer !== null) window.clearInterval(decisionTimer);
+    };
+  }, [contractType, configuration, feedStatus, isAnalyzing]);
 
   useEffect(() => {
     if (!activePrediction || feedStatus !== 'live') {
@@ -423,6 +335,7 @@ export function DigitScannerView({
       const remaining = Math.max(0, Math.ceil((activePrediction.expiresAt - now) / 1000));
       setPredictionSecondsRemaining(remaining);
       if (remaining === 0) {
+        callbacksRef.current.onSoundAlert('timer-ended');
         setActivePrediction(null);
       }
     };
@@ -432,7 +345,7 @@ export function DigitScannerView({
     return () => window.clearInterval(timer);
   }, [activePrediction, feedStatus]);
 
-  const topTicks = displayedPrediction?.analyzedTicks ?? topResult?.ticks.slice(-RECENT_ANALYSIS_TICKS) ?? [];
+  const topTicks = displayedPrediction?.analyzedTicks ?? topResult?.analyzedTicks ?? [];
   const canScan = feedStatus === 'live' && readyMarkets > 0 && !isAnalyzing;
 
   return (
@@ -458,8 +371,7 @@ export function DigitScannerView({
             <div className="flex min-w-0 items-center gap-2">
               <Wifi size={15} className={feedStatus === 'live' ? 'shrink-0 text-[#39dfaa]' : 'shrink-0 text-[#d7b966]'} />
               <div className="min-w-0">
-                <p className="font-mono-ui text-[7px] font-bold tracking-[.12em] text-[#67bbaa]">SCANNING ALL AVAILABLE VOLATILITY MARKETS</p>
-                <p className="mt-0.5 truncate text-[10px] font-extrabold text-[#dff8f5]">{totalMarkets} markets tracked · {readyMarkets} meet the minimum test-history requirement</p>
+                <p className="truncate text-[10px] font-extrabold text-[#dff8f5]">{totalMarkets} markets · {readyMarkets} ready</p>
               </div>
             </div>
             <span className="shrink-0 rounded-md border border-[#175b4d] bg-[#073a2e] px-2 py-1 font-mono-ui text-[8px] font-bold text-[#69d8ca]">{feedStatus === 'live' ? 'LIVE SCAN' : feedStatusLabel}</span>
@@ -481,22 +393,26 @@ export function DigitScannerView({
                 className="flex items-center gap-1.5 rounded-md border border-[#c4a44e] bg-gradient-to-r from-[#b68a31] to-[#e0bc5c] px-3 py-1.5 font-mono-ui text-[9px] font-extrabold tracking-wider text-[#211b10] shadow-[0_3px_15px_rgba(195,155,58,.14)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-45"
               >
                 <Target size={12} />
-                {isAnalyzing ? 'ANALYZING…' : 'SCAN NOW'}
+                {isAnalyzing
+                  ? scanPhase === 'collecting' ? 'COLLECTING…' : 'DECIDING…'
+                  : 'SCAN NOW'}
               </button>
             </div>
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
               <span className="font-mono-ui text-[9px] text-[#98a9c2]">
                 {isAnalyzing
-                  ? `ANALYZING ${totalMarkets} MARKETS IN PARALLEL`
+                  ? scanPhase === 'collecting'
+                    ? `COLLECTING 10 FRESH TICKS · ${totalMarkets} MARKETS`
+                    : `DECIDING FROM 100 PRIOR + 10 FRESH TICKS`
                   : displayedPrediction
                     ? `TOP ${contractLabel} PERFORMER · ${displayedPrediction.marketSymbol}`
                     : scanResults
                       ? 'SCAN COMPLETE · RUN AGAIN FOR A FRESH RESULT'
-                      : 'NO MARKET PICKED · START A MANUAL SCAN'}
+                      : 'READY'}
               </span>
               <span className="rounded-md border border-[#214c98] bg-[#102653] px-2.5 py-1 font-mono-ui text-[9px] font-bold text-[#70baff]">
                 {isAnalyzing
-                  ? 'LIVE ANALYSIS'
+                  ? scanPhase === 'collecting' ? '10s COLLECTION' : '5s DECISION'
                   : displayedPrediction
                     ? `PICK EXPIRES IN ${predictionSecondsRemaining}s`
                     : feedStatusLabel}
@@ -506,19 +422,19 @@ export function DigitScannerView({
               {scanMessage
                 ?? (lastManualScan
                   ? `Latest manual scan: ${lastManualScan}`
-                  : 'Press SCAN NOW to scan markets.')}
+                  : 'Ready to scan.')}
             </p>
           </section>
 
           <section className="rounded-[13px] border border-[#176a79] bg-gradient-to-b from-[#0c1a28] to-[#07111b] p-2.5 shadow-[0_0_18px_rgba(32,201,220,.08)] sm:p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="font-mono-ui text-[8px] font-bold tracking-[.12em] text-[#e2bd5c]">TOP WALK-FORWARD MARKET · {contractLabel}</p>
-                <h2 data-testid="scanner-selected-market" className="mt-1 text-[15px] font-extrabold leading-tight text-[#edf3ff] sm:text-[18px]">{displayedPrediction?.marketLabel.toUpperCase() ?? 'SCANNING MARKETS'}</h2>
-                {displayedPrediction && <p data-testid="scanner-selected-symbol" className="mt-0.5 font-mono-ui text-[8px] font-bold text-[#72b7eb]">{displayedPrediction.marketSymbol}</p>}
+                <p className="font-mono-ui text-[8px] font-bold tracking-[.12em] text-[#e2bd5c]">{displayedPrediction ? displayedPrediction.isValidated ? 'VALIDATED WALK-FORWARD PREDICTION' : 'TOP-RANKED PREDICTION · EDGE UNCONFIRMED' : topResult ? 'TOP-RANKED WATCH CANDIDATE' : 'WALK-FORWARD PREDICTION'} · {contractLabel}</p>
+                <h2 data-testid="scanner-selected-market" className="mt-1 text-[15px] font-extrabold leading-tight text-[#edf3ff] sm:text-[18px]">{(displayedPrediction?.marketLabel ?? topResult?.label)?.toUpperCase() ?? 'SCANNING MARKETS'}</h2>
+                {(displayedPrediction || topResult) && <p data-testid="scanner-selected-symbol" className="mt-0.5 font-mono-ui text-[8px] font-bold text-[#72b7eb]">{displayedPrediction?.marketSymbol ?? topResult?.symbol}</p>}
               </div>
               <span data-testid="scanner-edge-badge" className={`rounded-full border px-2 py-1 font-mono-ui text-[8px] font-bold tracking-wide ${edgeValidated ? 'border-[#168a61] bg-[#073a2a] text-[#61e4aa]' : 'border-[#755f30] bg-[#302713] text-[#e0c365]'}`}>
-                {edgeValidated ? 'EDGE TEST PASSED' : displayedPrediction ? 'NO VERIFIED EDGE' : 'SCAN TO SELECT'}
+                {edgeValidated ? 'EDGE TEST PASSED' : displayedPrediction ? 'PREDICTION · UNCONFIRMED' : topResult ? 'WATCH ONLY · EDGE UNCONFIRMED' : 'SCAN TO SELECT'}
               </span>
             </div>
 
@@ -526,29 +442,29 @@ export function DigitScannerView({
               <div className="inline-flex items-center gap-2 rounded-lg border border-[#216caf] bg-[#08284c] px-3 py-2 shadow-[0_0_15px_rgba(27,135,255,.18)]">
                 <Target size={14} className="text-[#5bbaff]" />
                 <div>
-                  <p className="font-mono-ui text-[7px] font-bold tracking-wider text-[#70baff]">SCAN-WINDOW CONTRACT WIN RATE</p>
-                  <strong data-testid="scanner-candidate-probability" className="font-display text-[16px] font-extrabold text-[#e8f5ff]">
-                    {displayedPrediction
-                      ? formatPercent(displayedPrediction.recentOccurrences / displayedPrediction.recentSampleSize)
+                  <p className="font-mono-ui text-[7px] font-bold tracking-wider text-[#70baff]">WALK-FORWARD LOWER BOUND</p>
+                  <strong data-testid="scanner-candidate-probability" title="Historical lower bound, not a forecast." className="font-display text-[16px] font-extrabold text-[#e8f5ff]">
+                    {displayedPrediction || topResult
+                      ? formatPercent(displayedPrediction?.wilsonLowerBound ?? topResult?.wilsonLowerBound ?? null)
                       : '--'}
                   </strong>
                 </div>
               </div>
               <span data-testid="scanner-digit-recurrence" className="font-mono-ui text-[8px] text-[#8e9db5]">
                 {displayedPrediction
-                  ? `${displayedPrediction.signalLabel}: ${displayedPrediction.recentOccurrences}/${displayedPrediction.recentSampleSize} scan wins · ${displayedPrediction.analyzedWindowOccurrences}/${displayedPrediction.analyzedTickCount} scan ticks analyzed`
+                  ? `${displayedPrediction.signalLabel}: ${displayedPrediction.recentOccurrences}/${displayedPrediction.recentSampleSize} recent wins · ${SCANNER_PRIOR_TICK_COUNT} prior + ${FRESH_SCAN_TICK_COUNT} fresh ticks`
                   : contractType === 'over' || contractType === 'under'
-                    ? `${RECENT_ANALYSIS_TICKS} ticks analyzed · fixed ${contractType === 'over' ? 'Over 3' : 'Under 6'} barrier`
+                    ? `${SCANNER_PRIOR_TICK_COUNT} prior + ${FRESH_SCAN_TICK_COUNT} fresh ticks · ${contractType.toUpperCase()} ${configuration.barrier} barrier`
                     : contractType === 'even-odd'
-                      ? `${RECENT_ANALYSIS_TICKS} ticks analyzed · parity chosen from latest ${RECENT_DIGIT_WINDOW}`
-                      : `${RECENT_ANALYSIS_TICKS} ticks analyzed · ${contractType === 'differ' ? 'recurring barrier' : 'most recurring digit'} from latest ${RECENT_DIGIT_WINDOW}`}
+                      ? `${SCANNER_PRIOR_TICK_COUNT} prior + ${FRESH_SCAN_TICK_COUNT} fresh ticks · ${configuration.parity === 'auto' ? 'parity selected from the analysis window' : `${configuration.parity.toUpperCase()} selected`}`
+                      : `${SCANNER_PRIOR_TICK_COUNT} prior + ${FRESH_SCAN_TICK_COUNT} fresh ticks · ${settingsDigitLabel(contractType, configuration.targetDigit)}`}
               </span>
             </div>
 
             {displayedPrediction ? (
               <>
                 <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-[#236b8b] bg-[#0a1e2d] px-3 py-2">
-                  <span className="font-mono-ui text-[8px] font-bold tracking-wider text-[#8ccbed]">WALK-FORWARD HIT RATE</span>
+                  <span className="font-mono-ui text-[8px] font-bold tracking-wider text-[#8ccbed]">HISTORICAL WALK-FORWARD HIT RATE</span>
                   <strong data-testid="scanner-walk-forward-hit-rate" className="font-mono-ui text-[10px] font-extrabold text-[#dce8f4]">
                     {formatPercent(displayedPrediction.backtestAccuracy)} · {displayedPrediction.backtestHits}/{displayedPrediction.backtestPredictions}
                   </strong>
@@ -557,7 +473,7 @@ export function DigitScannerView({
                   <div className="rounded-[13px] border border-[#12d1ac] bg-gradient-to-br from-[#075d5c] to-[#07987f] p-2.5 text-center shadow-[0_0_18px_rgba(0,225,182,.27)] sm:p-3">
                     <div className="mx-auto mb-1 w-fit rounded-md bg-[#063c42]/80 px-2 py-1 font-mono-ui text-[8px] font-bold tracking-wider text-[#9df6e3]">{contractLabel}</div>
                     <strong data-testid="scanner-candidate-digit" className="block break-words font-display text-[38px] font-extrabold leading-none text-white drop-shadow-[0_2px_8px_rgba(0,0,0,.3)] sm:text-[48px]">{displayedPrediction.signalLabel}</strong>
-                    <div className="mt-2 rounded-md bg-[#d7f0ff] px-2 py-1 font-mono-ui text-[8px] font-extrabold tracking-wider text-[#183351]">SCANNED CONTRACT SIGNAL</div>
+                    <div className="mt-2 rounded-md bg-[#d7f0ff] px-2 py-1 font-mono-ui text-[8px] font-extrabold tracking-wider text-[#183351]">{displayedPrediction.isValidated ? 'EDGE THRESHOLD PASSED' : 'CANDIDATE · NOT VALIDATED'}</div>
                   </div>
                   <div className={`rounded-[13px] border p-2.5 text-center shadow-[0_0_18px_rgba(41,99,255,.25)] sm:p-3 ${predictionSecondsRemaining <= 2 ? 'border-[#ec5676] bg-gradient-to-br from-[#60183a] to-[#c12655]' : 'border-[#3c78ff] bg-gradient-to-br from-[#102b83] to-[#124be1]'}`}>
                     <div className="mx-auto mb-1 flex w-fit items-center gap-1 rounded-md bg-[#071b5e]/75 px-2 py-1 font-mono-ui text-[8px] font-bold tracking-wider text-[#c2d6ff]"><Clock3 size={10} /> COUNTDOWN</div>
@@ -570,7 +486,9 @@ export function DigitScannerView({
               <div data-testid="scanner-warmup" className="mt-3 rounded-lg border border-[#293a46] bg-[#0c171e] px-4 py-7 text-center">
                 {isAnalyzing ? (
                   <>
-                    <p className="font-mono-ui text-[10px] font-bold tracking-[.16em] text-[#67d9c2]">LIVE ANALYSIS IN PROGRESS</p>
+                    <p className="font-mono-ui text-[10px] font-bold tracking-[.16em] text-[#67d9c2]">
+                      {scanPhase === 'collecting' ? 'COLLECTING FRESH TICKS' : 'DECIDING PREDICTION'}
+                    </p>
                     <strong
                       data-testid="scanner-analysis-countdown-large"
                       role="timer"
@@ -592,9 +510,13 @@ export function DigitScannerView({
                         )
                       ))}
                     </strong>
-                    <p className="font-mono-ui text-[9px] font-bold tracking-wider text-[#dce6ef]">SECONDS REMAINING</p>
+                    <p className="font-mono-ui text-[9px] font-bold tracking-wider text-[#dce6ef]">
+                      {scanPhase === 'collecting' ? 'COLLECTION + DECISION TIME REMAINING' : 'DECISION TIME REMAINING'}
+                    </p>
                     <p className="mt-2 text-[9px] text-[#82939a]">
-                      Collecting fresh ticks from all {totalMarkets} markets at once · each result uses ticks received during this scan.
+                      {scanPhase === 'collecting'
+                        ? `Collecting 10 fresh ticks across ${totalMarkets} markets; the prediction is decided in the final 5 seconds.`
+                        : `Analyzing 100 pre-scan ticks plus 10 fresh ticks. Markets with fewer than 10 fresh ticks are skipped.`}
                     </p>
                     <div className="mx-auto mt-3 h-1.5 max-w-sm overflow-hidden rounded-full bg-[#1a2636]">
                       <div
@@ -606,9 +528,9 @@ export function DigitScannerView({
                 ) : (
                   <>
                     <Activity size={20} className="mx-auto mb-2 text-[#56d5cb]" />
-                    <p className="text-[11px] font-bold text-[#dce6ef]">{scanMessage ? 'No qualified market found' : 'No market picked yet'}</p>
+                    <p className="text-[11px] font-bold text-[#dce6ef]">{topResult ? 'Best-ranked watch candidate · validation not passed' : scanMessage ? 'Insufficient comparable data' : 'No market picked yet'}</p>
                     <p className="mt-1 text-[9px] text-[#82939a]">
-                      {scanMessage ?? `${readyMarkets}/${totalMarkets} markets ready. Press SCAN NOW to begin.`}
+                      {scanMessage ?? `${readyMarkets}/${totalMarkets} markets ready.`}
                     </p>
                   </>
                 )}
@@ -635,8 +557,8 @@ export function DigitScannerView({
                   <ShieldCheck size={12} className="text-[#55c7e7]" />
                   <span className="text-[#a8bed2]">TOP PICK WALK-FORWARD TEST</span>
                   <strong className={`ml-auto font-mono-ui text-[8px] ${edgeValidated ? 'text-[#53dfad]' : 'text-[#e0c365]'}`}>
-                    {displayedPrediction
-                      ? `${displayedPrediction.backtestHits}/${displayedPrediction.backtestPredictions} · ${formatPercent(displayedPrediction.backtestAccuracy)}`
+                    {displayedPrediction || topResult
+                      ? `${displayedPrediction?.backtestHits ?? topResult?.backtestHits}/${displayedPrediction?.backtestPredictions ?? topResult?.backtestPredictions} · ${formatPercent(displayedPrediction?.backtestAccuracy ?? topResult?.backtestAccuracy ?? null)}`
                       : '--'}
                   </strong>
                 </div>
@@ -644,63 +566,16 @@ export function DigitScannerView({
               <p data-testid="scanner-signal-status" className={`mt-2 text-[9px] font-bold ${edgeValidated ? 'text-[#72d7aa]' : 'text-[#d7b966]'}`}>
                 {displayedPrediction
                   ? edgeValidated
-                    ? 'Edge confirmed by walk-forward test.'
-                    : 'Edge not confirmed.'
-                  : 'Run a scan to select a market.'}
+                    ? 'Validated'
+                    : 'Unconfirmed · watch only'
+                    : scanResults
+                      ? scanResults.length > 0
+                        ? `${new Set(rankedMarkets.map(({ symbol }) => symbol)).size} markets analyzed`
+                        : 'Insufficient data'
+                      : 'Run scan'}
               </p>
             </div>
           </section>
-
-          <section className="rounded-lg border border-[#27344d] bg-[#0a111d] p-3">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <h2 className="font-mono-ui text-[9px] font-bold tracking-[.1em] text-[#9fb1c8]">MARKET + CONTRACT RANKING</h2>
-              <span className="font-mono-ui text-[7px] text-[#71839d]">TOP {contractLabel} · WALK-FORWARD TEST</span>
-            </div>
-            {topResult ? (
-              <ol data-testid="scanner-market-ranking" className="space-y-1.5">
-                <li data-testid={`scanner-market-rank-${topResult.symbol}-${topResult.signalKey}`} className="grid grid-cols-[22px_minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-[#168b70] bg-[#073027] px-2 py-2">
-                    <span className="font-mono-ui text-[8px] font-bold text-[#8295b0]">#1</span>
-                    <div className="min-w-0">
-                      <p className="truncate text-[9px] font-bold text-[#dce8f4]">{topResult.label}</p>
-                      <p className="font-mono-ui text-[7px] text-[#7189a3]">
-                        {topResult.symbol} · {topResult.backtestHits}/{topResult.backtestPredictions} tested · recent {topResult.recentOccurrences}/{topResult.recentSampleSize}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="rounded border border-[#215b82] bg-[#0d2740] px-1.5 py-1 font-mono-ui text-[8px] font-bold text-[#83ceff]">{topResult.signalLabel}</span>
-                      <strong className="min-w-[48px] text-right font-mono-ui text-[9px] font-bold text-[#dce8f4]">{formatPercent(topResult.backtestAccuracy)}</strong>
-                      <button type="button" onClick={() => onMarketSelect(topResult.symbol)} data-testid={`scanner-use-market-${topResult.symbol}-${topResult.signalKey}`} className="rounded border border-[#31516d] px-1.5 py-1 font-mono-ui text-[7px] font-bold text-[#8ccbed] transition hover:border-[#54d8d6] hover:text-white">USE</button>
-                    </div>
-                </li>
-              </ol>
-            ) : (
-              <p className="rounded-md border border-[#27344d] bg-[#0c1421] px-3 py-5 text-center text-[9px] text-[#82939a]">
-                {scanResults
-                  ? 'No qualified market found.'
-                  : 'Press SCAN NOW to scan markets.'}
-              </p>
-            )}
-          </section>
-
-          <div className="grid grid-cols-2 gap-2">
-            <section className="rounded-lg border border-[#27344d] bg-[#0a111d] p-3">
-              <h2 className="mb-2 font-mono-ui text-[8px] font-bold tracking-[.1em] text-[#9fb1c8]">LAST 20 ANALYZED TICKS</h2>
-              {topTicks.length > 0 ? (
-                <ol data-testid="scanner-recent-digits" aria-label="Last 20 analyzed ticks for the selected market" className="flex flex-wrap gap-1">
-                  {topTicks.slice(-20).reverse().map((tick, index) => (
-                    <li key={`${topTicks.length - index}-${tick.price}`} className={`grid h-6 w-6 place-items-center rounded border font-mono-ui text-[9px] font-bold ${index === 0 ? 'border-[#1d9a83] bg-[#0d4439] text-[#6de4dc]' : 'border-[#293a46] bg-[#0c171e] text-[#b8c8ce]'}`}>{tick.digit}</li>
-                  ))}
-                </ol>
-              ) : <p className="text-[9px] text-[#82939a]">Waiting for ticks.</p>}
-            </section>
-            <section className="rounded-lg border border-[#27344d] bg-[#0a111d] p-3">
-              <h2 className="mb-2 font-mono-ui text-[8px] font-bold tracking-[.1em] text-[#9fb1c8]">TOP PICK TEST</h2>
-              <p data-testid="scanner-backtest-sample" className="font-mono-ui text-[9px] text-[#b8c8ce]">
-                {topResult ? `${topResult.backtestHits}/${topResult.backtestPredictions} · ${formatPercent(topResult.backtestAccuracy)}` : 'Run a scan to compare performance'}
-              </p>
-              <p className="mt-1 font-mono-ui text-[7px] text-[#71839d]">Top market · sequential holdout calls</p>
-            </section>
-          </div>
 
         </div>
       </section>

@@ -32,11 +32,23 @@ import {
 } from 'lucide-react';
 import { ActivityLogView, type ActivityRecord } from './components/analysis/ActivityLogView';
 import {
-  DigitScannerView,
+  MarketScannerDashboard,
+} from './components/analysis/MarketScannerDashboard';
+import {
   isContractWin,
-  type ContractType,
   type PredictionOutcomeStart,
 } from './components/analysis/DigitScannerView';
+import { type LiveTick } from '@/lib/analysis-engine';
+import {
+  parsePerformanceHistory,
+  summarizePerformance,
+  type PredictionOutcomeRecord,
+} from '@/lib/performance';
+import {
+  isValidPipSize,
+  parseTimestampedTick,
+  parseTimestampedTickHistory,
+} from '@/lib/market-data';
 import {
   Route,
   Switch,
@@ -46,6 +58,47 @@ import {
 
 const queryClient = new QueryClient();
 
+type ScannerSoundAlert = 'signal-found' | 'timer-ended';
+
+function playTone(context: AudioContext, alert: ScannerSoundAlert) {
+  const notes: {
+    frequency: number;
+    endFrequency?: number;
+    delay: number;
+    duration: number;
+    wave: OscillatorType;
+  }[] = alert === 'signal-found'
+    ? [
+      { frequency: 784, delay: 0, duration: 0.16, wave: 'triangle' },
+      { frequency: 1175, delay: 0.13, duration: 0.16, wave: 'triangle' },
+      { frequency: 1568, delay: 0.26, duration: 0.24, wave: 'triangle' },
+    ]
+    : [
+      { frequency: 440, endFrequency: 330, delay: 0, duration: 0.34, wave: 'sawtooth' },
+      { frequency: 330, endFrequency: 220, delay: 0.42, duration: 0.42, wave: 'sawtooth' },
+    ];
+  const startedAt = context.currentTime;
+
+  for (const note of notes) {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const noteStart = startedAt + note.delay;
+    const noteEnd = noteStart + note.duration;
+    oscillator.type = note.wave;
+    oscillator.frequency.setValueAtTime(note.frequency, noteStart);
+    if (note.endFrequency !== undefined) {
+      oscillator.frequency.linearRampToValueAtTime(note.endFrequency, noteEnd);
+    }
+    gain.gain.setValueAtTime(0.0001, noteStart);
+    gain.gain.exponentialRampToValueAtTime(alert === 'signal-found' ? 0.12 : 0.08, noteStart + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, noteEnd);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(noteStart);
+    oscillator.stop(noteEnd + 0.01);
+  }
+}
+
 type WorkspaceTheme = 'ocean' | 'aurora' | 'ember' | 'cyberpunk' | 'obsidian';
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -54,13 +107,13 @@ interface BeforeInstallPromptEvent extends Event {
 
 interface WorkspaceSettings {
   theme: WorkspaceTheme;
-  contractType: ContractType;
 }
 
 const SETTINGS_STORAGE_KEY = 'deriv-analysis-workspace-settings';
+const PREDICTION_PERFORMANCE_STORAGE_KEY = 'deriv-analysis-prediction-performance-v1';
+const PREDICTION_HISTORY_LIMIT = 500;
 const DEFAULT_WORKSPACE_SETTINGS: WorkspaceSettings = {
   theme: 'ocean',
-  contractType: 'match-digit',
 };
 
 function readWorkspaceSettings(): WorkspaceSettings {
@@ -75,7 +128,7 @@ function readWorkspaceSettings(): WorkspaceSettings {
       return DEFAULT_WORKSPACE_SETTINGS;
     }
 
-    const candidate = parsed as Partial<WorkspaceSettings>;
+    const candidate = parsed as { theme?: unknown };
     return {
       theme: candidate.theme === 'aurora'
         || candidate.theme === 'ember'
@@ -83,14 +136,6 @@ function readWorkspaceSettings(): WorkspaceSettings {
         || candidate.theme === 'obsidian'
         ? candidate.theme
         : 'ocean',
-      contractType: candidate.contractType === 'differ'
-        || candidate.contractType === 'under'
-        || candidate.contractType === 'over'
-        || candidate.contractType === 'even-odd'
-        ? candidate.contractType
-        : candidate.contractType === 'over-under'
-          ? 'over'
-          : 'match-digit',
     };
   } catch (error) {
     console.warn('Unable to load saved workspace settings.', error);
@@ -122,28 +167,16 @@ interface LiveMarketData {
   scannerTicks: LiveTick[];
 }
 
-interface LiveTick {
-  price: string;
-  digit: number;
-}
-
 interface ScannedMarketData extends MarketOption {
   ticks: LiveTick[];
 }
-
-type PredictionOutcomeRecord = PredictionOutcomeStart & {
-  wins: number;
-  losses: number;
-  observedTicks: number;
-  status: 'tracking' | 'complete' | 'replaced';
-};
 
 interface DerivFeedMessage {
   error?: { message?: string };
   req_id?: number;
   pip_size?: number;
-  history?: { prices?: (string | number)[] };
-  tick?: { quote?: string | number; symbol?: string; pip_size?: number };
+  history?: { prices?: (string | number)[]; times?: number[] };
+  tick?: { quote?: string | number; symbol?: string; pip_size?: number; epoch?: number };
   echo_req?: { ticks_history?: string };
   ping?: string;
   active_symbols?: {
@@ -161,22 +194,6 @@ const EMPTY_LIVE_MARKET_DATA: LiveMarketData = {
   scannerTicks: [],
 };
 
-function getQuoteDetails(quote: string | number, pipSize: number) {
-  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(String(quote));
-  if (!match) {
-    return null;
-  }
-
-  const decimals = Number.isInteger(pipSize) && pipSize >= 0 && pipSize <= 10
-    ? pipSize
-    : 2;
-  const fraction = (match[3] ?? '').padEnd(decimals, '0');
-  const price = `${match[1]}${match[2]}${fraction ? `.${fraction}` : ''}`;
-  const lastDigit = Number(price.at(-1));
-
-  return Number.isInteger(lastDigit) ? { price, lastDigit } : null;
-}
-
 function Home() {
   const [markets, setMarkets] = useState<MarketOption[]>(DEFAULT_MARKETS);
   const [marketSymbol, setMarketSymbol] = useState<string>(DEFAULT_MARKETS[0].symbol);
@@ -185,6 +202,7 @@ function Home() {
   const [installPromptEvent, setInstallPromptEvent] = useState<BeforeInstallPromptEvent | null>(null);
   const [isAppInstalled, setIsAppInstalled] = useState(false);
   const [settings, setSettings] = useState<WorkspaceSettings>(readWorkspaceSettings);
+  const [soundAlertsEnabled, setSoundAlertsEnabled] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState<WorkspaceSettings>(settings);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [logExpanded, setLogExpanded] = useState(false);
@@ -196,17 +214,112 @@ function Home() {
   const [scannerTicksByMarket, setScannerTicksByMarket] = useState<Record<string, LiveTick[]>>({});
   const [scannerTickVersionsByMarket, setScannerTickVersionsByMarket] = useState<Record<string, number>>({});
   const [predictionOutcomes, setPredictionOutcomes] = useState<PredictionOutcomeRecord[]>([]);
+  const [performanceHistoryLoaded, setPerformanceHistoryLoaded] = useState(false);
   const [scannerFeedStatus, setScannerFeedStatus] = useState<FeedStatus>('connecting');
   const [scannerFeedError, setScannerFeedError] = useState<string | null>(null);
   const market = markets.find((item) => item.symbol === marketSymbol) ?? DEFAULT_MARKETS[0];
   const activitySequence = useRef(3);
   const tickHistoryByMarket = useRef(new Map<string, LiveTick[]>());
   const activeFeedMarket = useRef(marketSymbol);
-  const activePredictionOutcomeRef = useRef<PredictionOutcomeRecord | null>(null);
-  const predictionOutcomeTimeoutRef = useRef<number | undefined>(undefined);
+  const activePredictionOutcomesRef = useRef(new Map<string, PredictionOutcomeRecord>());
+  const predictionOutcomeTimeoutsRef = useRef(new Map<string, number>());
+  const performanceStorageErrorShownRef = useRef(false);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const [activityEntries, setActivityEntries] = useState<ActivityRecord[]>([
     { id: 2, time: 'READY', title: 'Connecting to live market feed', detail: 'Waiting for public Deriv tick data.', tone: 'blue' },
   ]);
+
+  const toggleSoundAlerts = async () => {
+    if (soundAlertsEnabled) {
+      setSoundAlertsEnabled(false);
+      setNotice('Sound alerts disabled.');
+      return;
+    }
+
+    if (typeof window.AudioContext === 'undefined') {
+      setNotice('Sound alerts are not supported by this browser.');
+      return;
+    }
+
+    try {
+      const context = audioContextRef.current ?? new window.AudioContext();
+      await context.resume();
+      if (context.state !== 'running') {
+        throw new Error('Audio playback did not start.');
+      }
+      audioContextRef.current = context;
+      setSoundAlertsEnabled(true);
+      setNotice('Sound alerts enabled for signals and expired prediction timers.');
+    } catch (error) {
+      console.error('Unable to enable sound alerts.', error);
+      setNotice('Sound alerts could not be enabled. Check browser audio permissions and try again.');
+    }
+  };
+
+  const playScannerSoundAlert = (alert: ScannerSoundAlert) => {
+    if (!soundAlertsEnabled) return;
+    const context = audioContextRef.current;
+    if (!context) {
+      setNotice('Sound alerts are enabled, but audio is unavailable. Toggle alerts off and on to restore sound.');
+      return;
+    }
+
+    const play = () => {
+      try {
+        playTone(context, alert);
+      } catch (error) {
+        console.error('Unable to play scanner sound alert.', error);
+        setNotice('Scanner sound could not play. Toggle sound alerts off and on to restore audio.');
+      }
+    };
+
+    if (context.state === 'suspended') {
+      void context.resume().then(play).catch((error: unknown) => {
+        console.error('Unable to resume audio for scanner alert.', error);
+        setNotice('Scanner sound could not play. Toggle sound alerts off and on to restore audio.');
+      });
+      return;
+    }
+
+    play();
+  };
+
+  useEffect(() => {
+    try {
+      const savedHistory = localStorage.getItem(PREDICTION_PERFORMANCE_STORAGE_KEY);
+      if (savedHistory) {
+        const parsed: unknown = JSON.parse(savedHistory);
+        const history = parsePerformanceHistory(parsed).slice(0, PREDICTION_HISTORY_LIMIT);
+        if (!Array.isArray(parsed) || history.length !== parsed.length) {
+          setNotice('Some saved performance records were invalid and have been skipped.');
+        }
+        setPredictionOutcomes(history);
+      }
+    } catch (error) {
+      console.error('Unable to load saved prediction performance history.', error);
+      setNotice('Saved prediction performance could not be loaded. New results will still be tracked.');
+    } finally {
+      setPerformanceHistoryLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!performanceHistoryLoaded) return;
+
+    try {
+      localStorage.setItem(
+        PREDICTION_PERFORMANCE_STORAGE_KEY,
+        JSON.stringify(predictionOutcomes.slice(0, PREDICTION_HISTORY_LIMIT)),
+      );
+      performanceStorageErrorShownRef.current = false;
+    } catch (error) {
+      console.error('Unable to save prediction performance history.', error);
+      if (!performanceStorageErrorShownRef.current) {
+        setNotice('Prediction results are tracked for this session but could not be saved to this browser.');
+        performanceStorageErrorShownRef.current = true;
+      }
+    }
+  }, [performanceHistoryLoaded, predictionOutcomes]);
 
   useEffect(() => {
     document.documentElement.dataset.workspaceTheme = settings.theme;
@@ -250,53 +363,75 @@ function Home() {
     setPredictionOutcomes((current) => [
       outcome,
       ...current.filter((item) => item.id !== outcome.id),
-    ].slice(0, 8));
+    ].slice(0, PREDICTION_HISTORY_LIMIT));
   };
 
-  const finishPredictionOutcome = (status: 'complete' | 'replaced') => {
-    const outcome = activePredictionOutcomeRef.current;
+  const finishPredictionOutcome = (
+    engineId: PredictionOutcomeRecord['engineId'],
+    status: 'complete' | 'replaced' | 'interrupted',
+  ) => {
+    const outcome = activePredictionOutcomesRef.current.get(engineId);
     if (!outcome) {
       return;
     }
 
-    if (predictionOutcomeTimeoutRef.current !== undefined) {
-      window.clearTimeout(predictionOutcomeTimeoutRef.current);
-      predictionOutcomeTimeoutRef.current = undefined;
+    const timeout = predictionOutcomeTimeoutsRef.current.get(engineId);
+    if (timeout !== undefined) {
+      window.clearTimeout(timeout);
+      predictionOutcomeTimeoutsRef.current.delete(engineId);
     }
     publishPredictionOutcome({ ...outcome, status });
-    activePredictionOutcomeRef.current = null;
+    activePredictionOutcomesRef.current.delete(engineId);
+  };
+
+  const interruptPredictionForMarket = (symbol: string) => {
+    for (const outcome of activePredictionOutcomesRef.current.values()) {
+      if (outcome.marketSymbol === symbol) {
+        finishPredictionOutcome(outcome.engineId, 'interrupted');
+      }
+    }
   };
 
   const startPredictionOutcome = (prediction: PredictionOutcomeStart) => {
-    finishPredictionOutcome('replaced');
+    finishPredictionOutcome(prediction.engineId, 'replaced');
     const outcome: PredictionOutcomeRecord = {
       ...prediction,
       wins: 0,
       losses: 0,
       observedTicks: 0,
+      squaredProbabilityError: 0,
       status: 'tracking',
     };
-    activePredictionOutcomeRef.current = outcome;
+    activePredictionOutcomesRef.current.set(outcome.engineId, outcome);
     publishPredictionOutcome(outcome);
-    predictionOutcomeTimeoutRef.current = window.setTimeout(() => {
-      if (activePredictionOutcomeRef.current?.id === outcome.id) {
-        finishPredictionOutcome('complete');
+    const timeout = window.setTimeout(() => {
+      if (activePredictionOutcomesRef.current.get(outcome.engineId)?.id === outcome.id) {
+        finishPredictionOutcome(outcome.engineId, 'complete');
       }
     }, Math.max(0, prediction.expiresAt - Date.now()));
+    predictionOutcomeTimeoutsRef.current.set(outcome.engineId, timeout);
   };
 
   const resetPredictionOutcomes = () => {
-    if (predictionOutcomeTimeoutRef.current !== undefined) {
-      window.clearTimeout(predictionOutcomeTimeoutRef.current);
-      predictionOutcomeTimeoutRef.current = undefined;
+    for (const timeout of predictionOutcomeTimeoutsRef.current.values()) {
+      window.clearTimeout(timeout);
     }
-    activePredictionOutcomeRef.current = null;
+    predictionOutcomeTimeoutsRef.current.clear();
+    activePredictionOutcomesRef.current.clear();
     setPredictionOutcomes([]);
   };
 
+  useEffect(() => {
+    if (scannerFeedStatus !== 'live') {
+      for (const outcome of activePredictionOutcomesRef.current.values()) {
+        finishPredictionOutcome(outcome.engineId, 'interrupted');
+      }
+    }
+  }, [scannerFeedStatus]);
+
   useEffect(() => () => {
-    if (predictionOutcomeTimeoutRef.current !== undefined) {
-      window.clearTimeout(predictionOutcomeTimeoutRef.current);
+    for (const timeout of predictionOutcomeTimeoutsRef.current.values()) {
+      window.clearTimeout(timeout);
     }
   }, []);
 
@@ -406,14 +541,22 @@ function Home() {
         }
 
         lastMessageAt = Date.now();
-        currentSocket.send(JSON.stringify({
-          ticks_history: marketSymbol,
-          count: TICK_WINDOW_SIZE,
-          end: 'latest',
-          style: 'ticks',
-          subscribe: 1,
-        }));
-        currentSocket.send(JSON.stringify({ active_symbols: 'full' }));
+        try {
+          currentSocket.send(JSON.stringify({
+            ticks_history: marketSymbol,
+            count: TICK_WINDOW_SIZE,
+            end: 'latest',
+            style: 'ticks',
+            subscribe: 1,
+          }));
+          currentSocket.send(JSON.stringify({ active_symbols: 'full' }));
+        } catch (error) {
+          console.error('Unable to subscribe to the Deriv live feed.', error);
+          setFeedStatus('error');
+          setFeedError('The Deriv WebSocket opened but rejected its market subscriptions.');
+          currentSocket.close();
+          return;
+        }
         stopHeartbeat();
         heartbeatTimer = window.setInterval(() => {
           if (disposed || currentSocket !== socket || currentSocket.readyState !== WebSocket.OPEN) {
@@ -486,15 +629,29 @@ function Home() {
         }
 
         if (message.pip_size !== undefined) {
+          if (!isValidPipSize(message.pip_size)) {
+            setFeedError(`Deriv returned invalid price precision for ${market.label}; the affected quote was ignored.`);
+            return;
+          }
           pipSize = message.pip_size;
         }
 
         if (message.history?.prices) {
-          const history = message.history.prices
-            .map((quote) => getQuoteDetails(quote, pipSize))
-            .filter((quote): quote is NonNullable<typeof quote> => quote !== null)
-            .slice(-TICK_WINDOW_SIZE);
-          ticks = history.map(({ price, lastDigit }) => ({ price, digit: lastDigit }));
+          const historyPrices = message.history.prices.slice(-TICK_WINDOW_SIZE);
+          const historyTimes = message.history.times?.slice(-historyPrices.length);
+          const history = historyTimes
+            ? parseTimestampedTickHistory(historyPrices, historyTimes, pipSize, marketSymbol)
+            : null;
+          if (!history) {
+            setFeedError(`Deriv returned invalid, incomplete, or out-of-order timestamped tick history for ${market.label}; the history was ignored.`);
+            return;
+          }
+          ticks = history.map(({ price, lastDigit, epoch, symbol }) => ({
+            price,
+            digit: lastDigit,
+            epoch,
+            symbol,
+          }));
           tickHistoryByMarket.current.set(marketSymbol, ticks);
           publishData();
           setFeedStatus('live');
@@ -504,18 +661,39 @@ function Home() {
         }
 
         if (message.tick?.quote !== undefined) {
+          if (message.tick.symbol !== undefined && message.tick.symbol !== marketSymbol) {
+            setFeedError(`Deriv returned a tick for ${message.tick.symbol} on the ${market.label} subscription; the tick was ignored.`);
+            return;
+          }
           if (message.tick.pip_size !== undefined) {
+            if (!isValidPipSize(message.tick.pip_size)) {
+              setFeedError(`Deriv returned invalid price precision for ${market.label}; the affected tick was ignored.`);
+              return;
+            }
             pipSize = message.tick.pip_size;
           }
-          const quote = getQuoteDetails(message.tick.quote, pipSize);
-          if (quote) {
-            ticks = [...ticks, { price: quote.price, digit: quote.lastDigit }].slice(-TICK_WINDOW_SIZE);
-            tickHistoryByMarket.current.set(marketSymbol, ticks);
-            publishData();
-            setFeedStatus('live');
-            setFeedError(null);
-            reconnectAttempt = 0;
+          const tick = parseTimestampedTick(
+            message.tick.quote,
+            pipSize,
+            message.tick.epoch ?? Number.NaN,
+            marketSymbol,
+            ticks.at(-1)?.epoch,
+          );
+          if (!tick) {
+            setFeedError(`Deriv returned an invalid, stale, duplicate, or out-of-order tick for ${market.label}; the affected tick was ignored.`);
+            return;
           }
+          ticks = [...ticks, {
+            price: tick.price,
+            digit: tick.lastDigit,
+            epoch: tick.epoch,
+            symbol: tick.symbol,
+          }].slice(-TICK_WINDOW_SIZE);
+          tickHistoryByMarket.current.set(marketSymbol, ticks);
+          publishData();
+          setFeedStatus('live');
+          setFeedError(null);
+          reconnectAttempt = 0;
         }
       };
 
@@ -647,18 +825,26 @@ function Home() {
         }
 
         lastMessageAt = Date.now();
-        volatilityMarkets.forEach(({ symbol }, index) => {
-          const reqId = index + 1;
-          requestIdToSymbol.set(reqId, symbol);
-          currentSocket.send(JSON.stringify({
-            req_id: reqId,
-            ticks_history: symbol,
-            count: TICK_WINDOW_SIZE,
-            end: 'latest',
-            style: 'ticks',
-            subscribe: 1,
-          }));
-        });
+        try {
+          volatilityMarkets.forEach(({ symbol }, index) => {
+            const reqId = index + 1;
+            requestIdToSymbol.set(reqId, symbol);
+            currentSocket.send(JSON.stringify({
+              req_id: reqId,
+              ticks_history: symbol,
+              count: TICK_WINDOW_SIZE,
+              end: 'latest',
+              style: 'ticks',
+              subscribe: 1,
+            }));
+          });
+        } catch (error) {
+          console.error('Unable to subscribe to Deriv scanner markets.', error);
+          setScannerFeedStatus('error');
+          setScannerFeedError('The Deriv scanner connection opened but rejected its market subscriptions.');
+          currentSocket.close();
+          return;
+        }
 
         stopHeartbeat();
         heartbeatTimer = window.setInterval(() => {
@@ -700,6 +886,7 @@ function Home() {
           : undefined;
         if (message.error) {
           const failedMarket = volatilityMarkets.find((item) => item.symbol === requestSymbol);
+          if (requestSymbol) interruptPredictionForMarket(requestSymbol);
           setScannerFeedError(
             failedMarket
               ? `Could not scan ${failedMarket.label}: ${message.error.message || 'Deriv rejected its tick request.'}`
@@ -708,27 +895,68 @@ function Home() {
           return;
         }
 
+        const echoedSymbol = typeof message.echo_req?.ticks_history === 'string'
+          ? message.echo_req.ticks_history
+          : undefined;
+        const taggedSymbols = [requestSymbol, message.tick?.symbol, echoedSymbol]
+          .filter((tag): tag is string => typeof tag === 'string');
+        if (new Set(taggedSymbols).size > 1) {
+          taggedSymbols.forEach(interruptPredictionForMarket);
+          setScannerFeedError(
+            `Deriv returned conflicting market symbols for one scanner response (${[...new Set(taggedSymbols)].join(', ')}); the response was ignored.`,
+          );
+          return;
+        }
+
         const symbol = message.tick?.symbol
           ?? requestSymbol
-          ?? (typeof message.echo_req?.ticks_history === 'string' ? message.echo_req.ticks_history : undefined);
+          ?? echoedSymbol;
         if (!symbol || !volatilityMarkets.some((item) => item.symbol === symbol)) {
+          if (symbol) {
+            setScannerFeedError(`Deriv returned an unrequested market (${symbol}) on the scanner feed; the response was ignored.`);
+          }
           return;
         }
 
         if (message.pip_size !== undefined) {
+          if (!isValidPipSize(message.pip_size)) {
+            const failedMarket = volatilityMarkets.find((item) => item.symbol === symbol);
+            interruptPredictionForMarket(symbol);
+            setScannerFeedError(`Deriv returned invalid price precision for ${failedMarket?.label ?? symbol}; the affected response was ignored.`);
+            return;
+          }
           pipSizeBySymbol.set(symbol, message.pip_size);
         }
         if (message.tick?.pip_size !== undefined) {
+          if (!isValidPipSize(message.tick.pip_size)) {
+            const failedMarket = volatilityMarkets.find((item) => item.symbol === symbol);
+            interruptPredictionForMarket(symbol);
+            setScannerFeedError(`Deriv returned invalid price precision for ${failedMarket?.label ?? symbol}; the affected tick was ignored.`);
+            return;
+          }
           pipSizeBySymbol.set(symbol, message.tick.pip_size);
         }
         const pipSize = pipSizeBySymbol.get(symbol) ?? 2;
 
         if (message.history?.prices) {
-          const history = message.history.prices
-            .map((quote) => getQuoteDetails(quote, pipSize))
-            .filter((quote): quote is NonNullable<typeof quote> => quote !== null)
-            .slice(-TICK_WINDOW_SIZE)
-            .map(({ price, lastDigit }) => ({ price, digit: lastDigit }));
+          const historyPrices = message.history.prices.slice(-TICK_WINDOW_SIZE);
+          const historyTimes = message.history.times?.slice(-historyPrices.length);
+          const parsedHistory = historyTimes
+            ? parseTimestampedTickHistory(historyPrices, historyTimes, pipSize, symbol)
+            : null;
+          if (!parsedHistory) {
+            const failedMarket = volatilityMarkets.find((item) => item.symbol === symbol);
+            interruptPredictionForMarket(symbol);
+            setScannerFeedError(`Deriv returned invalid, incomplete, or out-of-order timestamped tick history for ${failedMarket?.label ?? symbol}; the history was ignored.`);
+            return;
+          }
+          const history = parsedHistory
+            .map(({ price, lastDigit, epoch, symbol: tickSymbol }) => ({
+              price,
+              digit: lastDigit,
+              epoch,
+              symbol: tickSymbol,
+            }));
           ticksBySymbol.set(symbol, history);
           setScannerTicksByMarket((current) => ({ ...current, [symbol]: history }));
           setScannerFeedStatus('live');
@@ -738,41 +966,58 @@ function Home() {
         }
 
         if (message.tick?.quote !== undefined) {
-          const quote = getQuoteDetails(message.tick.quote, pipSize);
-          if (quote) {
-            const predictionOutcome = activePredictionOutcomeRef.current;
-            if (predictionOutcome?.marketSymbol === symbol) {
-              if (Date.now() >= predictionOutcome.expiresAt) {
-                finishPredictionOutcome('complete');
-              } else {
-                const won = isContractWin(
-                  predictionOutcome.contractType,
-                  predictionOutcome.signalKey,
-                  predictionOutcome.digit,
-                  quote.lastDigit,
-                );
-                const updatedOutcome: PredictionOutcomeRecord = {
-                  ...predictionOutcome,
-                  wins: predictionOutcome.wins + Number(won),
-                  losses: predictionOutcome.losses + Number(!won),
-                  observedTicks: predictionOutcome.observedTicks + 1,
-                };
-                activePredictionOutcomeRef.current = updatedOutcome;
-                publishPredictionOutcome(updatedOutcome);
-              }
-            }
-
-            const ticks = [...(ticksBySymbol.get(symbol) ?? []), { price: quote.price, digit: quote.lastDigit }]
-              .slice(-TICK_WINDOW_SIZE);
-            ticksBySymbol.set(symbol, ticks);
-            const tickVersion = (tickVersionsBySymbol.get(symbol) ?? 0) + 1;
-            tickVersionsBySymbol.set(symbol, tickVersion);
-            setScannerTicksByMarket((current) => ({ ...current, [symbol]: ticks }));
-            setScannerTickVersionsByMarket((current) => ({ ...current, [symbol]: tickVersion }));
-            setScannerFeedStatus('live');
-            setScannerFeedError(null);
-            reconnectAttempt = 0;
+          const tick = parseTimestampedTick(
+            message.tick.quote,
+            pipSize,
+            message.tick.epoch ?? Number.NaN,
+            symbol,
+            ticksBySymbol.get(symbol)?.at(-1)?.epoch,
+          );
+          if (!tick) {
+            const failedMarket = volatilityMarkets.find((item) => item.symbol === symbol);
+            interruptPredictionForMarket(symbol);
+            setScannerFeedError(`Deriv returned an invalid, stale, duplicate, or out-of-order tick for ${failedMarket?.label ?? symbol}; the affected tick was ignored.`);
+            return;
           }
+          for (const predictionOutcome of activePredictionOutcomesRef.current.values()) {
+            if (predictionOutcome.marketSymbol !== symbol) continue;
+            if (Date.now() >= predictionOutcome.expiresAt) {
+              finishPredictionOutcome(predictionOutcome.engineId, 'complete');
+            } else {
+              const won = isContractWin(
+                predictionOutcome.contractType,
+                predictionOutcome.signalKey,
+                predictionOutcome.digit,
+                tick.lastDigit,
+              );
+              const updatedOutcome: PredictionOutcomeRecord = {
+                ...predictionOutcome,
+                wins: predictionOutcome.wins + Number(won),
+                losses: predictionOutcome.losses + Number(!won),
+                observedTicks: predictionOutcome.observedTicks + 1,
+                squaredProbabilityError: predictionOutcome.squaredProbabilityError
+                  + (predictionOutcome.estimatedProbability - Number(won)) ** 2,
+              };
+              activePredictionOutcomesRef.current.set(updatedOutcome.engineId, updatedOutcome);
+              publishPredictionOutcome(updatedOutcome);
+            }
+          }
+
+          const ticks = [...(ticksBySymbol.get(symbol) ?? []), {
+            price: tick.price,
+            digit: tick.lastDigit,
+            epoch: tick.epoch,
+            symbol: tick.symbol,
+          }]
+            .slice(-TICK_WINDOW_SIZE);
+          ticksBySymbol.set(symbol, ticks);
+          const tickVersion = (tickVersionsBySymbol.get(symbol) ?? 0) + 1;
+          tickVersionsBySymbol.set(symbol, tickVersion);
+          setScannerTicksByMarket((current) => ({ ...current, [symbol]: ticks }));
+          setScannerTickVersionsByMarket((current) => ({ ...current, [symbol]: tickVersion }));
+          setScannerFeedStatus('live');
+          setScannerFeedError(null);
+          reconnectAttempt = 0;
         }
       };
 
@@ -858,8 +1103,8 @@ function Home() {
 
     setSettings(settingsDraft);
     setSettingsOpen(false);
-    recordActivity('Workspace settings saved', `Theme: ${settingsDraft.theme}; preferred contract: ${settingsDraft.contractType}.`);
-    setNotice(`Settings saved. The next scan will use ${settingsDraft.contractType.replace('-', ' ').toUpperCase()}. No contract is purchased or traded.`);
+    recordActivity('Workspace settings saved', `Theme: ${settingsDraft.theme}.`);
+    setNotice('Workspace appearance settings saved. Each analysis engine keeps its own contract and signal settings.');
   };
 
   const rankedUniqueCounts = [...new Set(liveMarketData.digitCounts)].sort((left, right) => right - left);
@@ -899,16 +1144,18 @@ function Home() {
       : feedStatus === 'error'
         ? 'FEED ERROR'
         : 'CONNECTING';
+  const performanceByMarket = summarizePerformance(predictionOutcomes);
+  const recentPredictionOutcomes = predictionOutcomes.slice(0, 8);
   return (
     <main className="dashboard-backdrop min-h-[100dvh] px-3 pb-8 pt-3 text-[#dce6ef] sm:px-3 sm:pt-4">
       <div className="mx-auto max-w-[1440px]">
-        <header className="topbar mb-4 flex items-center justify-between gap-3 border-b border-[#263441] pb-3 sm:mb-6 sm:pb-4">
+        <header className="topbar mb-4 flex flex-wrap items-center gap-3 border-b border-[#263441] pb-3 sm:mb-6 sm:pb-4">
           <div className="flex items-center gap-3">
             <div className="brand-mark grid h-10 w-10 place-items-center rounded-xl border border-[#b89a57]/50 bg-[#17232a] text-[#d3b66e] shadow-[inset_0_0_16px_rgba(202,172,97,.08)]">
               <Activity size={20} strokeWidth={1.8} />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="ml-auto flex items-center gap-2">
                 <span className="font-display text-[22px] font-bold leading-none tracking-[.09em] text-[#f2f0e9]">ONE-MARKET</span>
               </div>
               <p className="mt-1 font-mono-ui text-[8px] tracking-[.12em] text-[#7f929e]">LIVE MARKET ANALYSIS</p>
@@ -924,7 +1171,7 @@ function Home() {
               <span className={`pulse-dot h-1.5 w-1.5 rounded-full ${feedStatus === 'live' ? 'bg-[#42d8d2]' : feedStatus === 'error' ? 'bg-[#ef4444]' : 'bg-[#d6ad51]'}`} />
               <span className="font-mono-ui text-[10px] tracking-[.12em] text-[#6de4dc]">{feedStatusLabel}</span>
             </div>
-            <button type="button" onClick={() => setNotice('Notifications are disabled in this preview.')} aria-label="Notifications" data-testid="button-notifications" className="grid h-9 w-9 place-items-center rounded-lg border border-[#263441] bg-[#101a22] text-[#a5b2bc] transition hover:border-[#447985] hover:text-[#54d8d6]">
+            <button type="button" onClick={() => { void toggleSoundAlerts(); }} aria-label={soundAlertsEnabled ? 'Disable sound alerts' : 'Enable sound alerts'} aria-pressed={soundAlertsEnabled} title={soundAlertsEnabled ? 'Sound alerts on' : 'Sound alerts off'} data-testid="button-notifications" className={`grid h-9 w-9 place-items-center rounded-lg border transition ${soundAlertsEnabled ? 'border-[#1c9a7a] bg-[#10382f] text-[#67e8b5]' : 'border-[#263441] bg-[#101a22] text-[#a5b2bc] hover:border-[#447985] hover:text-[#54d8d6]'}`}>
               <Bell size={16} />
             </button>
             <button type="button" onClick={() => { setSettingsDraft(settings); setSettingsOpen(true); }} aria-label="Settings" data-testid="button-settings" className="grid h-9 w-9 place-items-center rounded-lg border border-[#263441] bg-[#101a22] text-[#a5b2bc] transition hover:border-[#447985] hover:text-[#54d8d6]">
@@ -948,7 +1195,7 @@ function Home() {
                 <Settings2 size={20} className="text-[#43d6e5]" /> WORKSPACE SETTINGS
               </DialogTitle>
               <DialogDescription className="text-xs leading-relaxed text-[#8fa4b2]">
-                Choose the workspace appearance and the contract type you want to configure.
+                Choose the workspace appearance. Contract and signal settings are managed independently in each engine dashboard.
               </DialogDescription>
             </DialogHeader>
 
@@ -974,29 +1221,6 @@ function Home() {
                 </select>
               </label>
 
-              <label className="block space-y-2">
-                <span className="block font-mono-ui text-[10px] font-bold tracking-[.12em] text-[#82dce5]">SCANNER CONTRACT TYPE</span>
-                <select
-                  value={settingsDraft.contractType}
-                  onChange={(event) => {
-                    const contractType = event.target.value;
-                    if (contractType === 'match-digit' || contractType === 'differ' || contractType === 'over' || contractType === 'under' || contractType === 'even-odd') {
-                      setSettingsDraft((current) => ({ ...current, contractType }));
-                    }
-                  }}
-                  data-testid="select-contract-type"
-                  className="w-full rounded-lg border border-[#285264] bg-[#0b202c] px-3 py-2.5 text-sm text-[#e1f3f5] outline-none focus:border-[#3dd5e3]"
-                >
-                  <option value="match-digit">Matches · current scanner</option>
-                  <option value="differ">Differs</option>
-                  <option value="over">Over</option>
-                  <option value="under">Under</option>
-                  <option value="even-odd">Even / Odd</option>
-                </select>
-                <span className="block text-[10px] leading-relaxed text-[#8195a3]">
-                  The next scan applies this contract’s win condition and walk-forward test. Over and Under are scanned separately using their configured barriers. Analysis only; this does not place trades.
-                </span>
-              </label>
             </div>
 
             <DialogFooter className="gap-2 sm:flex-row">
@@ -1012,7 +1236,7 @@ function Home() {
 
         <DashboardView>
         <div id="workspace" className="scroll-mt-4">
-        <div className="grid items-start gap-3 sm:grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)] lg:grid-cols-[minmax(0,2.2fr)_minmax(260px,1fr)]">
+        <div className="grid min-w-0 items-start gap-3 xl:grid-cols-[minmax(0,2.2fr)_minmax(360px,1fr)] 2xl:grid-cols-[minmax(0,2.2fr)_minmax(420px,1fr)]">
         <div id="market-analysis" className="order-1 min-w-0 scroll-mt-4">
         <section className="vibrant-frame scanline relative overflow-hidden rounded-[15px] border border-[#20c9dc] bg-[#06111d] p-3 sm:p-4">
           <div className="ambient-orb ambient-orb-a pointer-events-none absolute right-[-60px] top-[-110px] h-64 w-64 rounded-full bg-[#10bfc3]/[.06] blur-[70px]" />
@@ -1048,8 +1272,8 @@ function Home() {
               </div>
             </div>
 
-            <div className="grid gap-3 lg:grid-cols-[1.22fr_.78fr]">
-              <div className="space-y-3">
+            <div className="min-w-0">
+              <div className="space-y-3 min-w-0">
                 <section className="analysis-card card-cyan rounded-xl border border-[#9a7938] bg-[#071620]/95 p-3 sm:p-4">
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2"><div className="grid h-7 w-7 place-items-center rounded-md bg-[#3a301c] text-[#d7b760]"><Activity size={14} /></div><h2 className="text-[11px] font-extrabold tracking-[.1em] text-[#e3e8e6]">CANONICAL SCAN CYCLE</h2></div>
@@ -1136,56 +1360,94 @@ function Home() {
                   </div>
                 </section>
 
-                <section data-testid="prediction-outcome-history" aria-label="Scanned prediction outcome history" className="rounded-lg border border-[#087b78] bg-[#031c21] p-3">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <h3 className="font-mono-ui text-[9px] font-bold tracking-[.12em] text-[#f6cf31]">DATA ANALYSIS</h3>
+                <section data-testid="prediction-outcome-history" aria-label="Scanned prediction outcome history" className="rounded-xl border border-[#19aeb7] bg-gradient-to-br from-[#0a3038] via-[#09232d] to-[#211b12] p-3 shadow-[0_0_24px_rgba(25,190,190,.16)] sm:p-4">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-[#28727a]/70 pb-2.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="font-mono-ui text-[11px] font-extrabold tracking-[.12em] text-[#75f0e2] sm:text-xs">PREDICTION PERFORMANCE</h3>
+                      <span className="rounded-full border border-[#28727a] bg-[#07353b] px-2 py-1 font-mono-ui text-[7px] font-bold tracking-wide text-[#9bd9dc]">SAVED BY MARKET + CONTRACT</span>
+                    </div>
                     <div className="flex items-center gap-2">
-                      <span className="font-mono-ui text-[7px] text-[#829b91]">30-SECOND LIVE OUTCOMES</span>
                       <button
                         type="button"
                         onClick={resetPredictionOutcomes}
                         disabled={predictionOutcomes.length === 0}
                         data-testid="button-reset-prediction-results"
-                        className="rounded border border-[#526171] px-2 py-1 font-mono-ui text-[7px] font-bold text-[#aebdca] transition hover:border-[#d98989] hover:text-[#ffaaaa] disabled:cursor-not-allowed disabled:opacity-40"
+                        className="rounded-md border border-[#9a6560] bg-[#3a2025]/80 px-2.5 py-1.5 font-mono-ui text-[8px] font-bold tracking-wide text-[#ffc0a8] transition hover:border-[#ff8c77] hover:bg-[#55272b] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         RESET
                       </button>
                     </div>
                   </div>
-                  {predictionOutcomes.length > 0 ? (
-                    <ol className="space-y-1.5">
-                      {predictionOutcomes.map((outcome) => {
-                        const hitRate = outcome.observedTicks > 0
-                          ? `${((outcome.wins / outcome.observedTicks) * 100).toFixed(1)}%`
-                          : '--';
+                  {performanceByMarket.length > 0 ? (
+                    <ul data-testid="market-contract-performance" className="space-y-2 font-mono-ui text-[8px]">
+                      {performanceByMarket.map((summary) => {
                         const contractLabel = {
                           'match-digit': 'MATCHES',
                           differ: 'DIFFERS',
                           over: 'OVER',
                           under: 'UNDER',
                           'even-odd': 'EVEN / ODD',
-                        }[outcome.contractType];
+                        }[summary.contractType];
+                        const groupOutcomes = recentPredictionOutcomes.filter((outcome) => (
+                          outcome.marketSymbol === summary.marketSymbol
+                          && outcome.contractType === summary.contractType
+                        ));
+
                         return (
-                          <li key={outcome.id} data-testid={`prediction-outcome-${outcome.id}`} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-[#17483b] bg-[#061a1b] px-2.5 py-2">
-                            <span className="min-w-0 flex-1">
-                              <strong className="block truncate text-[9px] text-[#dce8e4]">{outcome.marketLabel} · {outcome.signalLabel}</strong>
-                              <span className="font-mono-ui text-[7px] text-[#829b91]">{outcome.marketSymbol} · {contractLabel}</span>
-                            </span>
-                            <span className="text-right">
-                              <strong className="block font-mono-ui text-[9px] text-[#6de4dc]">{outcome.wins}/{outcome.observedTicks} · {hitRate}</strong>
-                              <span className={`font-mono-ui text-[7px] ${outcome.status === 'tracking' ? 'text-[#e0c365]' : 'text-[#829b91]'}`}>
-                                {outcome.status === 'tracking' ? 'TRACKING' : outcome.status === 'replaced' ? 'ENDED BY NEW SCAN' : 'COMPLETE'}
-                                {outcome.observedTicks > 0 ? ` · ${outcome.losses} misses` : ''}
-                              </span>
-                            </span>
+                          <li key={`${summary.marketSymbol}-${summary.contractType}`} data-testid={`performance-group-${summary.marketSymbol}-${summary.contractType}`} className="min-w-0 rounded-lg border border-[#23777c] bg-gradient-to-r from-[#0b2932] to-[#102b2b] p-2.5 shadow-[inset_0_1px_0_rgba(115,240,226,.06)]">
+                            <h4 className="break-words font-semibold text-[9px] text-[#e8fffb]">{summary.marketLabel} <span className="text-[#77d6cf]">· {contractLabel}</span></h4>
+                            <dl className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1.5 sm:grid-cols-5">
+                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">SIGNALS</dt><dd className="text-[#ecf6f7]">{summary.signalCount}</dd></div>
+                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">W / L</dt><dd className="text-[#ecf6f7]">{summary.wins} / {summary.losses}</dd></div>
+                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">TICK ACCURACY</dt><dd className="font-bold text-[#66f0c0]">{summary.accuracy === null ? '--' : `${(summary.accuracy * 100).toFixed(1)}%`}</dd></div>
+                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">BRIER</dt><dd className="text-[#d3c7ff]">{summary.brierScore === null ? '--' : summary.brierScore.toFixed(3)}</dd></div>
+                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">ACTUAL EV</dt><dd className="font-bold text-[#ffd46e]">{summary.expectedValue === null ? 'N/A' : summary.expectedValue.toFixed(2)}</dd></div>
+                            </dl>
+                            {groupOutcomes.length > 0 && (
+                              <ol aria-label={`Recent ${contractLabel} predictions for ${summary.marketLabel}`} className="mt-2 space-y-1 border-t border-[#23777c]/60 pt-2">
+                                {groupOutcomes.map((outcome) => {
+                                  const hitRate = outcome.observedTicks > 0
+                                    ? `${((outcome.wins / outcome.observedTicks) * 100).toFixed(1)}%`
+                                    : '--';
+                                  return (
+                                    <li key={outcome.id} data-testid={`prediction-outcome-${outcome.id}`} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-[#28636a]/70 bg-[#071c27]/90 px-2 py-2">
+                                      <span className="min-w-0 flex-1">
+                                        <strong className="block truncate text-[9px] text-[#f1fffc]">{outcome.signalLabel} <span className="text-[#72e1d7]">· {outcome.marketSymbol}</span></strong>
+                                        <span className="block font-mono-ui text-[7px] text-[#9aaec2]">
+                                          Walk-forward {((outcome.backtestAccuracy) * 100).toFixed(1)}% · lower bound {((outcome.wilsonLowerBound) * 100).toFixed(1)}% · baseline {((outcome.baselineRate) * 100).toFixed(1)}%
+                                        </span>
+                                      </span>
+                                      <span className="text-right">
+                                        <strong className="block font-mono-ui text-[9px] font-extrabold text-[#66f0c0]">{outcome.wins}/{outcome.observedTicks} · {hitRate}</strong>
+                                        <span className={`font-mono-ui text-[7px] font-bold ${outcome.status === 'tracking' ? 'text-[#ffd46e]' : 'text-[#a0c4c6]'}`}>
+                                          {outcome.status === 'tracking'
+                                            ? 'TRACKING'
+                                            : outcome.status === 'replaced'
+                                              ? 'ENDED BY NEW SCAN'
+                                              : outcome.status === 'interrupted'
+                                                ? 'INTERRUPTED · PARTIAL'
+                                                : 'COMPLETE'}
+                                          {outcome.observedTicks > 0 ? ` · ${outcome.losses} misses` : ''}
+                                        </span>
+                                        <span className="block font-mono-ui text-[7px] text-[#a0c4c6]">
+                                          Brier {outcome.observedTicks > 0
+                                            ? (outcome.squaredProbabilityError / outcome.observedTicks).toFixed(3)
+                                            : '--'} · actual EV N/A
+                                        </span>
+                                      </span>
+                                    </li>
+                                  );
+                                })}
+                              </ol>
+                            )}
                           </li>
                         );
                       })}
-                    </ol>
+                    </ul>
                   ) : (
-                    <p className="text-[9px] text-[#82939a]">Each scan’s selected contract is checked against live ticks for 30 seconds.</p>
+                    <p className="rounded-lg border border-dashed border-[#28727a] bg-[#071c27]/80 px-3 py-4 text-center text-[9px] text-[#b3d3d5]">No prediction results yet.</p>
                   )}
-                  <p className="mt-2 font-mono-ui text-[7px] leading-relaxed text-[#6f8792]">Wins / observed ticks.</p>
+                  <p className="mt-2 font-mono-ui text-[7px] leading-relaxed text-[#a0c4c6]">Actual EV requires proposal and payout data. Saved in this browser.</p>
                 </section>
 
                 <section className="analysis-card card-gold rounded-xl border border-[#30404c] bg-[#101b24]/90 p-3 sm:p-4">
@@ -1211,24 +1473,24 @@ function Home() {
             </div>
 
             <footer className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[#293944] pt-3">
-              <p data-testid="status-data-disclaimer" className="flex items-center gap-1.5 text-[9px] text-[#82939a]"><ShieldCheck size={12} className="text-[#62c9ae]" /> Live market data only; digit percentages describe recent ticks, not predictions or advice.</p>
-              <button type="button" onClick={() => setNotice('Digit percentages use the latest 1,000 ticks. Data Analysis records live outcomes for 30 seconds after each scan.')} data-testid="button-data-info" className="flex items-center gap-1.5 text-[9px] font-bold tracking-[.05em] text-[#73b8c3] transition hover:text-[#a6edf0]"><CircleHelp size={12} /> DATA ANALYSIS</button>
+              <p data-testid="status-data-disclaimer" className="flex items-center gap-1.5 text-[9px] text-[#82939a]"><ShieldCheck size={12} className="text-[#62c9ae]"/> Predictions are not guarantees or trading advice.</p>
+              <button type="button" onClick={() => setNotice('Signals use adjusted walk-forward validation. Actual EV requires recorded proposal and payout data.')} data-testid="button-data-info" className="flex items-center gap-1.5 text-[9px] font-bold tracking-[.05em] text-[#73b8c3] transition hover:text-[#a6edf0]"><CircleHelp size={12} /> DATA ANALYSIS</button>
             </footer>
           </div>
         </section>
         </div>
         <section id="scanner-section" aria-label="Market scanner" className="order-2 min-w-0 scroll-mt-4">
-          <DigitScannerView
+          <MarketScannerDashboard
             markets={volatilityMarkets.map((item) => ({
               ...item,
               ticks: scannerTicksByMarket[item.symbol] ?? [],
               tickVersion: scannerTickVersionsByMarket[item.symbol] ?? 0,
             }))}
-            contractType={settings.contractType}
             feedStatus={scannerFeedStatus}
             feedError={scannerFeedError}
             onMarketSelect={selectMarket}
             onPredictionStart={startPredictionOutcome}
+            onSoundAlert={playScannerSoundAlert}
           />
         </section>
         </div>
