@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Activity, Clock3, ShieldCheck, Signal, Target, Wifi } from 'lucide-react';
 import {
   FRESH_SCAN_TICK_COUNT,
+  MATCH_EXECUTION_DELAY_TICKS,
   SCANNER_PRIOR_TICK_COUNT,
   isContractWin,
   scanMarkets,
@@ -186,7 +187,7 @@ export function DigitScannerView({
       const topCandidate = results[0];
       setScanResults(results);
       setScanMessage(
-        `Prediction: ${topCandidate.signalLabel} · ${topCandidate.label} · ${topCandidate.isValidated ? 'validated' : 'unconfirmed'} · ${topCandidate.freshTickCount}/${FRESH_SCAN_TICK_COUNT} fresh ticks · ${scannedMarketCount}/${marketsRef.current.length} markets had new ticks.`,
+        `Prediction: ${topCandidate.signalLabel} · ${topCandidate.label} · ${topCandidate.isValidated ? 'validated' : 'unconfirmed'}${contractType === 'match-digit' ? ` · target is ${MATCH_EXECUTION_DELAY_TICKS} ticks after entry` : ''} · ${topCandidate.freshTickCount}/${FRESH_SCAN_TICK_COUNT} fresh ticks · ${scannedMarketCount}/${marketsRef.current.length} markets had new ticks.`,
       );
       callbacksRef.current.onSoundAlert('signal-found');
       const startedAt = Date.now();
@@ -202,6 +203,9 @@ export function DigitScannerView({
         marketLabel: topCandidate.label,
         startedAt,
         expiresAt,
+        targetTickOffset: contractType === 'match-digit'
+          ? MATCH_EXECUTION_DELAY_TICKS
+          : 0,
         baselineRate: topCandidate.baselineRate,
         backtestHits: topCandidate.backtestHits,
         backtestPredictions: topCandidate.backtestPredictions,
@@ -454,13 +458,13 @@ export function DigitScannerView({
               <span data-testid="scanner-digit-recurrence" className="font-mono-ui text-[8px] text-[#8e9db5]">
                 {displayedPrediction
                   ? contractType === 'match-digit' && configuration.targetDigit === null
-                    ? `Transition model: ${displayedPrediction.analyzedTicks.at(-1)?.digit ?? '--'} → ${displayedPrediction.signalLabel.replace('MATCH ', '')} · ${displayedPrediction.recentOccurrences}/${displayedPrediction.recentSampleSize} matching transitions · ${SCANNER_PRIOR_TICK_COUNT} prior + ${displayedPrediction.freshTickCount} fresh`
+                    ? `Transition model: ${displayedPrediction.analyzedTicks.at(-1)?.digit ?? '--'} → ${displayedPrediction.signalLabel.replace('MATCH ', '')} in ${MATCH_EXECUTION_DELAY_TICKS} ticks · ${displayedPrediction.recentOccurrences}/${displayedPrediction.recentSampleSize} matching transitions · ${SCANNER_PRIOR_TICK_COUNT} prior + ${displayedPrediction.freshTickCount} fresh`
                     : `${displayedPrediction.signalLabel}: ${displayedPrediction.recentOccurrences}/${displayedPrediction.recentSampleSize} recent wins · ${SCANNER_PRIOR_TICK_COUNT} prior + ${displayedPrediction.freshTickCount} fresh`
                   : contractType === 'over' || contractType === 'under'
                     ? `${SCANNER_PRIOR_TICK_COUNT} prior + available fresh ticks · ${contractType.toUpperCase()} ${configuration.barrier} barrier`
                     : contractType === 'even-odd'
                       ? `${SCANNER_PRIOR_TICK_COUNT} prior + available fresh ticks · ${configuration.parity === 'auto' ? 'parity selected from the analysis window' : `${configuration.parity.toUpperCase()} selected`}`
-                      : `${SCANNER_PRIOR_TICK_COUNT} prior + available fresh ticks · ${settingsDigitLabel(contractType, configuration.targetDigit)}`}
+                      : `${SCANNER_PRIOR_TICK_COUNT} prior + available fresh ticks · ${settingsDigitLabel(contractType, configuration.targetDigit)}${contractType === 'match-digit' ? ` · ${MATCH_EXECUTION_DELAY_TICKS}-tick execution delay` : ''}`}
               </span>
             </div>
 

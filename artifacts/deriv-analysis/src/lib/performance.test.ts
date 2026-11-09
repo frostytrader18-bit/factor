@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  applyPredictionTick,
   calculateExpectedValue,
   parsePerformanceHistory,
   summarizePerformance,
@@ -21,6 +22,7 @@ function createOutcome(
     marketLabel: 'Volatility 100 Index',
     startedAt: 1,
     expiresAt: 30,
+    targetTickOffset: 0,
     baselineRate: 0.1,
     backtestHits: 80,
     backtestPredictions: 100,
@@ -32,6 +34,7 @@ function createOutcome(
     wins: 3,
     losses: 1,
     observedTicks: 4,
+    pendingTicks: 0,
     squaredProbabilityError: 0.4,
     status: 'complete',
     ...overrides,
@@ -71,6 +74,40 @@ test('performance is grouped per engine, market, and contract with accuracy and 
   const r75 = summaries.find((summary) => summary.marketSymbol === 'R_75');
   assert.equal(r75?.accuracy, null);
   assert.equal(r75?.brierScore, null);
+});
+
+test('three-tick MATCHES execution delay only settles against the third subsequent tick', () => {
+  let outcome = createOutcome({
+    targetTickOffset: 3,
+    wins: 0,
+    losses: 0,
+    observedTicks: 0,
+    pendingTicks: 0,
+    squaredProbabilityError: 0,
+    estimatedProbability: 0.2,
+    signalKey: '8',
+    signalLabel: 'MATCH 8',
+    digit: 8,
+  });
+
+  const firstTick = applyPredictionTick(outcome, 1);
+  outcome = firstTick.outcome;
+  assert.equal(firstTick.settled, false);
+  assert.equal(outcome.pendingTicks, 1);
+  assert.equal(outcome.observedTicks, 0);
+
+  const secondTick = applyPredictionTick(outcome, 8);
+  outcome = secondTick.outcome;
+  assert.equal(secondTick.settled, false);
+  assert.equal(outcome.pendingTicks, 2);
+  assert.equal(outcome.observedTicks, 0);
+
+  const thirdTick = applyPredictionTick(outcome, 8);
+  assert.equal(thirdTick.settled, true);
+  assert.equal(thirdTick.outcome.wins, 1);
+  assert.equal(thirdTick.outcome.losses, 0);
+  assert.equal(thirdTick.outcome.observedTicks, 1);
+  assert.equal(thirdTick.outcome.status, 'complete');
 });
 
 test('expected value is unavailable without an actual proposal payout', () => {

@@ -35,13 +35,15 @@ import {
   MarketScannerDashboard,
 } from './components/analysis/MarketScannerDashboard';
 import {
-  isContractWin,
   type PredictionOutcomeStart,
 } from './components/analysis/DigitScannerView';
-import { type LiveTick } from '@/lib/analysis-engine';
 import {
+  MATCH_EXECUTION_DELAY_TICKS,
+  type LiveTick,
+} from '@/lib/analysis-engine';
+import {
+  applyPredictionTick,
   parsePerformanceHistory,
-  summarizePerformance,
   type PredictionOutcomeRecord,
 } from '@/lib/performance';
 import {
@@ -214,6 +216,10 @@ function Home() {
   const [scannerTicksByMarket, setScannerTicksByMarket] = useState<Record<string, LiveTick[]>>({});
   const [scannerTickVersionsByMarket, setScannerTickVersionsByMarket] = useState<Record<string, number>>({});
   const [predictionOutcomes, setPredictionOutcomes] = useState<PredictionOutcomeRecord[]>([]);
+  const [performanceClock, setPerformanceClock] = useState(Date.now());
+  const hasLivePredictions = predictionOutcomes.some(
+    (outcome) => outcome.status === 'tracking',
+  );
   const [performanceHistoryLoaded, setPerformanceHistoryLoaded] = useState(false);
   const [scannerFeedStatus, setScannerFeedStatus] = useState<FeedStatus>('connecting');
   const [scannerFeedError, setScannerFeedError] = useState<string | null>(null);
@@ -367,49 +373,49 @@ function Home() {
   };
 
   const finishPredictionOutcome = (
-    engineId: PredictionOutcomeRecord['engineId'],
+    outcomeId: string,
     status: 'complete' | 'replaced' | 'interrupted',
   ) => {
-    const outcome = activePredictionOutcomesRef.current.get(engineId);
+    const outcome = activePredictionOutcomesRef.current.get(outcomeId);
     if (!outcome) {
       return;
     }
 
-    const timeout = predictionOutcomeTimeoutsRef.current.get(engineId);
+    const timeout = predictionOutcomeTimeoutsRef.current.get(outcomeId);
     if (timeout !== undefined) {
       window.clearTimeout(timeout);
-      predictionOutcomeTimeoutsRef.current.delete(engineId);
+      predictionOutcomeTimeoutsRef.current.delete(outcomeId);
     }
     publishPredictionOutcome({ ...outcome, status });
-    activePredictionOutcomesRef.current.delete(engineId);
+    activePredictionOutcomesRef.current.delete(outcomeId);
   };
 
   const interruptPredictionForMarket = (symbol: string) => {
     for (const outcome of activePredictionOutcomesRef.current.values()) {
       if (outcome.marketSymbol === symbol) {
-        finishPredictionOutcome(outcome.engineId, 'interrupted');
+        finishPredictionOutcome(outcome.id, 'interrupted');
       }
     }
   };
 
   const startPredictionOutcome = (prediction: PredictionOutcomeStart) => {
-    finishPredictionOutcome(prediction.engineId, 'replaced');
     const outcome: PredictionOutcomeRecord = {
       ...prediction,
       wins: 0,
       losses: 0,
       observedTicks: 0,
+      pendingTicks: 0,
       squaredProbabilityError: 0,
       status: 'tracking',
     };
-    activePredictionOutcomesRef.current.set(outcome.engineId, outcome);
+    activePredictionOutcomesRef.current.set(outcome.id, outcome);
     publishPredictionOutcome(outcome);
     const timeout = window.setTimeout(() => {
-      if (activePredictionOutcomesRef.current.get(outcome.engineId)?.id === outcome.id) {
-        finishPredictionOutcome(outcome.engineId, 'complete');
+      if (activePredictionOutcomesRef.current.has(outcome.id)) {
+        finishPredictionOutcome(outcome.id, 'complete');
       }
     }, Math.max(0, prediction.expiresAt - Date.now()));
-    predictionOutcomeTimeoutsRef.current.set(outcome.engineId, timeout);
+    predictionOutcomeTimeoutsRef.current.set(outcome.id, timeout);
   };
 
   const resetPredictionOutcomes = () => {
@@ -424,10 +430,17 @@ function Home() {
   useEffect(() => {
     if (scannerFeedStatus !== 'live') {
       for (const outcome of activePredictionOutcomesRef.current.values()) {
-        finishPredictionOutcome(outcome.engineId, 'interrupted');
+        finishPredictionOutcome(outcome.id, 'interrupted');
       }
     }
   }, [scannerFeedStatus]);
+
+  useEffect(() => {
+    if (!hasLivePredictions) return;
+
+    const timer = window.setInterval(() => setPerformanceClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [hasLivePredictions]);
 
   useEffect(() => () => {
     for (const timeout of predictionOutcomeTimeoutsRef.current.values()) {
@@ -982,24 +995,17 @@ function Home() {
           for (const predictionOutcome of activePredictionOutcomesRef.current.values()) {
             if (predictionOutcome.marketSymbol !== symbol) continue;
             if (Date.now() >= predictionOutcome.expiresAt) {
-              finishPredictionOutcome(predictionOutcome.engineId, 'complete');
+              finishPredictionOutcome(predictionOutcome.id, 'complete');
             } else {
-              const won = isContractWin(
-                predictionOutcome.contractType,
-                predictionOutcome.signalKey,
-                predictionOutcome.digit,
+              const { outcome: updatedOutcome, settled } = applyPredictionTick(
+                predictionOutcome,
                 tick.lastDigit,
               );
-              const updatedOutcome: PredictionOutcomeRecord = {
-                ...predictionOutcome,
-                wins: predictionOutcome.wins + Number(won),
-                losses: predictionOutcome.losses + Number(!won),
-                observedTicks: predictionOutcome.observedTicks + 1,
-                squaredProbabilityError: predictionOutcome.squaredProbabilityError
-                  + (predictionOutcome.estimatedProbability - Number(won)) ** 2,
-              };
-              activePredictionOutcomesRef.current.set(updatedOutcome.engineId, updatedOutcome);
+              activePredictionOutcomesRef.current.set(updatedOutcome.id, updatedOutcome);
               publishPredictionOutcome(updatedOutcome);
+              if (settled) {
+                finishPredictionOutcome(updatedOutcome.id, 'complete');
+              }
             }
           }
 
@@ -1144,8 +1150,9 @@ function Home() {
       : feedStatus === 'error'
         ? 'FEED ERROR'
         : 'CONNECTING';
-  const performanceByMarket = summarizePerformance(predictionOutcomes);
-  const recentPredictionOutcomes = predictionOutcomes.slice(0, 8);
+  const recentPredictionOutcomes = [...predictionOutcomes]
+    .sort((left, right) => right.startedAt - left.startedAt)
+    .slice(0, 8);
   return (
     <main className="dashboard-backdrop min-h-[100dvh] px-3 pb-8 pt-3 text-[#dce6ef] sm:px-3 sm:pt-4">
       <div className="mx-auto max-w-[1440px]">
@@ -1364,7 +1371,7 @@ function Home() {
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-[#28727a]/70 pb-2.5">
                     <div className="flex flex-wrap items-center gap-2">
                       <h3 className="font-mono-ui text-[11px] font-extrabold tracking-[.12em] text-[#75f0e2] sm:text-xs">PREDICTION PERFORMANCE</h3>
-                      <span className="rounded-full border border-[#28727a] bg-[#07353b] px-2 py-1 font-mono-ui text-[7px] font-bold tracking-wide text-[#9bd9dc]">SAVED BY MARKET + CONTRACT</span>
+                      <span className="rounded-full border border-[#28727a] bg-[#07353b] px-2 py-1 font-mono-ui text-[7px] font-bold tracking-wide text-[#9bd9dc]">LATEST SIGNALS · INDEPENDENT RESULTS</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <button
@@ -1378,72 +1385,126 @@ function Home() {
                       </button>
                     </div>
                   </div>
-                  {performanceByMarket.length > 0 ? (
-                    <ul data-testid="market-contract-performance" className="space-y-2 font-mono-ui text-[8px]">
-                      {performanceByMarket.map((summary) => {
+                  {recentPredictionOutcomes.length > 0 ? (
+                    <ol data-testid="market-contract-performance" className="space-y-2 font-mono-ui text-[8px]">
+                      {recentPredictionOutcomes.map((outcome, index) => {
+                        const hitRate = outcome.observedTicks > 0
+                          ? `${((outcome.wins / outcome.observedTicks) * 100).toFixed(1)}%`
+                          : '--';
                         const contractLabel = {
                           'match-digit': 'MATCHES',
                           differ: 'DIFFERS',
                           over: 'OVER',
                           under: 'UNDER',
                           'even-odd': 'EVEN / ODD',
-                        }[summary.contractType];
-                        const groupOutcomes = recentPredictionOutcomes.filter((outcome) => (
-                          outcome.marketSymbol === summary.marketSymbol
-                          && outcome.contractType === summary.contractType
-                        ));
+                        }[outcome.contractType];
+                        const statusLabel = outcome.status === 'tracking'
+                          ? 'TRACKING'
+                          : outcome.status === 'replaced'
+                            ? 'ENDED BY NEW SCAN'
+                            : outcome.status === 'interrupted'
+                              ? 'INTERRUPTED · PARTIAL'
+                              : 'COMPLETE';
+                        const secondsRemaining = outcome.status === 'tracking'
+                          ? Math.max(0, Math.ceil((outcome.expiresAt - performanceClock) / 1000))
+                          : 0;
+                        const awaitingMatchSettlement = outcome.targetTickOffset > 0
+                          && outcome.observedTicks === 0;
+                        const trackingProgress = Math.min(
+                          100,
+                          awaitingMatchSettlement
+                            ? (outcome.pendingTicks / outcome.targetTickOffset) * 100
+                            : Math.max(0, ((performanceClock - outcome.startedAt)
+                              / (outcome.expiresAt - outcome.startedAt)) * 100),
+                        );
 
                         return (
-                          <li key={`${summary.marketSymbol}-${summary.contractType}`} data-testid={`performance-group-${summary.marketSymbol}-${summary.contractType}`} className="min-w-0 rounded-lg border border-[#23777c] bg-gradient-to-r from-[#0b2932] to-[#102b2b] p-2.5 shadow-[inset_0_1px_0_rgba(115,240,226,.06)]">
-                            <h4 className="break-words font-semibold text-[9px] text-[#e8fffb]">{summary.marketLabel} <span className="text-[#77d6cf]">· {contractLabel}</span></h4>
-                            <dl className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1.5 sm:grid-cols-5">
-                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">SIGNALS</dt><dd className="text-[#ecf6f7]">{summary.signalCount}</dd></div>
-                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">W / L</dt><dd className="text-[#ecf6f7]">{summary.wins} / {summary.losses}</dd></div>
-                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">TICK ACCURACY</dt><dd className="font-bold text-[#66f0c0]">{summary.accuracy === null ? '--' : `${(summary.accuracy * 100).toFixed(1)}%`}</dd></div>
-                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">BRIER</dt><dd className="text-[#d3c7ff]">{summary.brierScore === null ? '--' : summary.brierScore.toFixed(3)}</dd></div>
-                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">ACTUAL EV</dt><dd className="font-bold text-[#ffd46e]">{summary.expectedValue === null ? 'N/A' : summary.expectedValue.toFixed(2)}</dd></div>
-                            </dl>
-                            {groupOutcomes.length > 0 && (
-                              <ol aria-label={`Recent ${contractLabel} predictions for ${summary.marketLabel}`} className="mt-2 space-y-1 border-t border-[#23777c]/60 pt-2">
-                                {groupOutcomes.map((outcome) => {
-                                  const hitRate = outcome.observedTicks > 0
-                                    ? `${((outcome.wins / outcome.observedTicks) * 100).toFixed(1)}%`
-                                    : '--';
-                                  return (
-                                    <li key={outcome.id} data-testid={`prediction-outcome-${outcome.id}`} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-[#28636a]/70 bg-[#071c27]/90 px-2 py-2">
-                                      <span className="min-w-0 flex-1">
-                                        <strong className="block truncate text-[9px] text-[#f1fffc]">{outcome.signalLabel} <span className="text-[#72e1d7]">· {outcome.marketSymbol}</span></strong>
-                                        <span className="block font-mono-ui text-[7px] text-[#9aaec2]">
-                                          Walk-forward {((outcome.backtestAccuracy) * 100).toFixed(1)}% · lower bound {((outcome.wilsonLowerBound) * 100).toFixed(1)}% · baseline {((outcome.baselineRate) * 100).toFixed(1)}%
-                                        </span>
-                                      </span>
-                                      <span className="text-right">
-                                        <strong className="block font-mono-ui text-[9px] font-extrabold text-[#66f0c0]">{outcome.wins}/{outcome.observedTicks} · {hitRate}</strong>
-                                        <span className={`font-mono-ui text-[7px] font-bold ${outcome.status === 'tracking' ? 'text-[#ffd46e]' : 'text-[#a0c4c6]'}`}>
-                                          {outcome.status === 'tracking'
-                                            ? 'TRACKING'
-                                            : outcome.status === 'replaced'
-                                              ? 'ENDED BY NEW SCAN'
-                                              : outcome.status === 'interrupted'
-                                                ? 'INTERRUPTED · PARTIAL'
-                                                : 'COMPLETE'}
-                                          {outcome.observedTicks > 0 ? ` · ${outcome.losses} misses` : ''}
-                                        </span>
-                                        <span className="block font-mono-ui text-[7px] text-[#a0c4c6]">
-                                          Brier {outcome.observedTicks > 0
-                                            ? (outcome.squaredProbabilityError / outcome.observedTicks).toFixed(3)
-                                            : '--'} · actual EV N/A
-                                        </span>
-                                      </span>
-                                    </li>
-                                  );
-                                })}
-                              </ol>
+                          <li
+                            key={outcome.id}
+                            data-testid={`prediction-outcome-${outcome.id}`}
+                            data-signal-order={index + 1}
+                            className={`min-w-0 rounded-lg border bg-gradient-to-r from-[#0b2932] to-[#102b2b] p-2.5 shadow-[inset_0_1px_0_rgba(115,240,226,.06)] ${index === 0 ? 'border-[#35c9ba]' : 'border-[#23777c]'}`}
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <h4 className="break-words font-semibold text-[9px] text-[#e8fffb]">
+                                  {outcome.signalLabel} <span className="text-[#77d6cf]">· {outcome.marketLabel}</span>
+                                </h4>
+                                <p className="mt-0.5 font-mono-ui text-[7px] text-[#a0c4c6]">
+                                  {outcome.marketSymbol} · {contractLabel}
+                                  {outcome.targetTickOffset > 0
+                                    ? ` · settle on tick ${outcome.targetTickOffset}`
+                                    : ''}
+                                  {' · '}
+                                  {new Date(outcome.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                  {index === 0 ? ' · LATEST' : ''}
+                                </p>
+                              </div>
+                              <span
+                                data-testid={`prediction-status-${outcome.id}`}
+                                className={`flex items-center gap-1.5 rounded-full border px-2 py-1 font-mono-ui text-[8px] font-extrabold tracking-wide ${outcome.status === 'tracking' ? 'border-[#a98029] bg-[#392b0d] text-[#ffdb67]' : 'border-[#34525a] bg-[#0b2028] text-[#a0c4c6]'}`}
+                              >
+                                {outcome.status === 'tracking' && (
+                                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#ffcf45]" />
+                                )}
+                                {outcome.status === 'tracking'
+                                  ? awaitingMatchSettlement
+                                    ? `WAITING · ${outcome.pendingTicks}/${outcome.targetTickOffset} TICKS`
+                                    : `LIVE · ${secondsRemaining}s`
+                                  : statusLabel}
+                              </span>
+                            </div>
+                            {outcome.status === 'tracking' && (
+                              <div
+                                role="progressbar"
+                                aria-label={awaitingMatchSettlement
+                                  ? `${outcome.pendingTicks} of ${outcome.targetTickOffset} execution-delay ticks observed`
+                                  : `${outcome.observedTicks} live ticks tracked, ${secondsRemaining} seconds remaining`}
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                                aria-valuenow={Math.round(trackingProgress)}
+                                className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#173039]"
+                              >
+                                <div
+                                  data-testid={`prediction-progress-${outcome.id}`}
+                                  className="h-full rounded-full bg-gradient-to-r from-[#19b899] via-[#65e8c2] to-[#ffcf45] transition-[width] duration-300"
+                                  style={{ width: `${trackingProgress}%` }}
+                                />
+                              </div>
                             )}
+                            <dl className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1.5 sm:grid-cols-5">
+                              <div className={outcome.status === 'tracking' ? 'rounded-md border border-[#28636a] bg-[#071c27]/90 px-2 py-1.5' : ''}>
+                                <dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">
+                                  {awaitingMatchSettlement
+                                    ? 'WAITING FOR MATCH SETTLEMENT'
+                                    : outcome.status === 'tracking' ? 'LIVE W / L' : 'W / L'}
+                                </dt>
+                                <dd
+                                  data-testid={`prediction-live-count-${outcome.id}`}
+                                  aria-live={outcome.status === 'tracking' ? 'polite' : undefined}
+                                  className={outcome.status === 'tracking' ? 'text-[12px] font-extrabold text-[#f3fffd]' : 'text-[#ecf6f7]'}
+                                >
+                                  {awaitingMatchSettlement
+                                    ? <span className="text-[10px]">Outcome recorded on tick {outcome.targetTickOffset}</span>
+                                    : <>
+                                      {outcome.wins} / {outcome.losses}
+                                      {outcome.status === 'tracking' && <span className="ml-1 text-[8px] font-medium text-[#a0c4c6]">({outcome.observedTicks} ticks)</span>}
+                                    </>}
+                                </dd>
+                              </div>
+                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">{outcome.status === 'tracking' ? 'LIVE ACCURACY' : 'TICK ACCURACY'}</dt><dd className="font-bold text-[#66f0c0]">{hitRate}</dd></div>
+                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">BACKTEST</dt><dd className="text-[#ecf6f7]">{outcome.backtestPredictions > 0 ? `${(outcome.backtestAccuracy * 100).toFixed(1)}% · ${outcome.backtestHits}/${outcome.backtestPredictions}` : 'N/A'}</dd></div>
+                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">BRIER</dt><dd className="text-[#d3c7ff]">{outcome.observedTicks > 0 ? (outcome.squaredProbabilityError / outcome.observedTicks).toFixed(3) : '--'}</dd></div>
+                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">ACTUAL EV</dt><dd className="font-bold text-[#ffd46e]">{outcome.expectedValue === null ? 'N/A' : outcome.expectedValue.toFixed(2)}</dd></div>
+                            </dl>
+                            <p className="mt-1.5 font-mono-ui text-[7px] text-[#9aaec2]">
+                              Lower bound {(outcome.wilsonLowerBound * 100).toFixed(1)}% · baseline {(outcome.baselineRate * 100).toFixed(1)}%
+                              {outcome.observedTicks > 0 ? ` · ${outcome.losses} misses` : ''}
+                            </p>
                           </li>
                         );
                       })}
-                    </ul>
+                    </ol>
                   ) : (
                     <p className="rounded-lg border border-dashed border-[#28727a] bg-[#071c27]/80 px-3 py-4 text-center text-[9px] text-[#b3d3d5]">No prediction results yet.</p>
                   )}

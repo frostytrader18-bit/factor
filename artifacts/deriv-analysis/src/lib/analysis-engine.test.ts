@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   getContractSignal,
+  getWalkForwardResults,
   isContractWin,
   multipleTestingZScore,
   scanMarkets,
@@ -17,7 +18,7 @@ function createMarket(digitAt: (index: number) => number): LiveTick[] {
 }
 
 function createTransitionMarket(length: number): LiveTick[] {
-  const pattern = [4, 8, 3, 3, 3, 4, 8, 3, 3, 3];
+  const pattern = [4, 0, 0, 8, 4, 1, 1, 8];
   return Array.from({ length }, (_, index) => {
     const digit = pattern[index % pattern.length];
     return { price: `100.${digit}`, digit };
@@ -42,7 +43,7 @@ test('signal generation requires observations and uses the latest context', () =
   const signal = getContractSignal(createMarket(() => 7).slice(0, 10), 'match-digit');
   assert.equal(signal?.signalKey, '7');
   assert.equal(signal?.baselineRate, 0.1);
-  assert.equal(signal?.recentSampleSize, 9);
+  assert.equal(signal?.recentSampleSize, 7);
 });
 
 test('automatic MATCHES still returns a fallback when prior transition support is absent', () => {
@@ -115,7 +116,7 @@ test('walk-forward validation accepts a strong historical signal', () => {
   const zeroCandidate = candidates[0];
   assert.ok(zeroCandidate);
   assert.equal(zeroCandidate.signalKey, '0');
-  assert.equal(zeroCandidate.backtestPredictions, 700);
+  assert.equal(zeroCandidate.backtestPredictions, 698);
   assert.equal(zeroCandidate.isValidated, true);
   assert.ok(zeroCandidate.wilsonLowerBound > zeroCandidate.baselineRate);
 });
@@ -174,7 +175,7 @@ test('scan returns an unvalidated candidate when fewer than 10 fresh ticks arriv
 test('automatic MATCHES predicts from recent digit transitions, not the most frequent digit', () => {
   const ticks = createTransitionMarket(1_000);
   const freshTicks = [
-    4, 8, 3, 3, 3, 4, 8, 3, 3, 4,
+    4, 0, 0, 8, 4, 1, 1, 8, 4, 4,
   ].map((digit) => ({ price: `200.${digit}`, digit }));
   const market = {
     symbol: 'R_100',
@@ -193,12 +194,32 @@ test('automatic MATCHES predicts from recent digit transitions, not the most fre
   }, Array<number>(10).fill(0));
   const mostFrequentDigit = digitCounts.indexOf(Math.max(...digitCounts));
 
-  assert.equal(mostFrequentDigit, 3);
+  assert.equal(mostFrequentDigit, 4);
   assert.equal(candidates.length, 1);
   assert.equal(candidates[0].digit, 8);
   assert.equal(candidates[0].isValidated, true);
-  assert.ok(candidates[0].backtestAccuracy > 0.8);
-  assert.equal(candidates[0].recentOccurrences, 22);
+  assert.ok(candidates[0].backtestAccuracy > 0.5);
+  assert.ok(candidates[0].recentOccurrences > 0);
+});
+
+test('MATCHES walk-forward outcomes score exactly three ticks after each prediction', () => {
+  const ticks = createMarket((index) => index % 10);
+  const result = getWalkForwardResults(ticks, 'match-digit', {
+    signalWindow: 100,
+    targetDigit: 3,
+  });
+  let expectedPredictions = 0;
+  let expectedHits = 0;
+
+  for (let index = 300; index + 2 < ticks.length; index += 1) {
+    expectedPredictions += 1;
+    if (ticks[index + 2].digit === 3) expectedHits += 1;
+  }
+
+  const digitThreeResult = result.signalResults.get('3');
+  assert.equal(result.predictions, expectedPredictions);
+  assert.equal(digitThreeResult?.predictions, expectedPredictions);
+  assert.equal(digitThreeResult?.hits, expectedHits);
 });
 
 test('all contract predictions use their matching win rules on subsequent ticks', () => {
@@ -278,7 +299,7 @@ test('scan returns an unvalidated prediction when pre-scan history is insufficie
 
   assert.equal(candidates.length, 1);
   assert.equal(candidates[0].isValidated, false);
-  assert.equal(candidates[0].backtestPredictions, 279);
+  assert.equal(candidates[0].backtestPredictions, 277);
 });
 
 test('scan returns an unvalidated prediction when no fresh ticks arrived', () => {

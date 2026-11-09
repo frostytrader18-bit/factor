@@ -1,5 +1,6 @@
 import {
   DEFAULT_ANALYSIS_ENGINE_CONFIGURATIONS,
+  MATCH_EXECUTION_DELAY_TICKS,
   createContractAnalysisEngine,
   isContractWin,
   type AnalysisEngineConfiguration,
@@ -8,6 +9,7 @@ import {
 } from './contract-engines.ts';
 
 export { isContractWin } from './contract-engines.ts';
+export { MATCH_EXECUTION_DELAY_TICKS } from './contract-engines.ts';
 
 export type LiveTick = {
   price: string;
@@ -82,6 +84,9 @@ export function getWalkForwardResults(
   configuration?: Partial<AnalysisEngineConfiguration>,
 ): WalkForwardResults {
   const engine = createContractAnalysisEngine(contractType, configuration);
+  const forecastHorizon = contractType === 'match-digit'
+    ? MATCH_EXECUTION_DELAY_TICKS
+    : 1;
   const firstTestIndex = Math.max(
     MIN_TRAINING_TICKS,
     engine.analysisWindow,
@@ -90,14 +95,21 @@ export function getWalkForwardResults(
   let predictions = 0;
   const signalResults = new Map<string, { hits: number; predictions: number }>();
 
-  for (let index = firstTestIndex; index < ticks.length; index += 1) {
+  for (
+    let index = firstTestIndex;
+    index + forecastHorizon - 1 < ticks.length;
+    index += 1
+  ) {
     const candidate = engine.getSignal(ticks.slice(0, index));
     if (!candidate) continue;
 
     const result = signalResults.get(candidate.signalKey) ?? { hits: 0, predictions: 0 };
     predictions += 1;
     result.predictions += 1;
-    if (engine.isWin(candidate.signalKey, ticks[index].digit)) {
+    if (engine.isWin(
+      candidate.signalKey,
+      ticks[index + forecastHorizon - 1].digit,
+    )) {
       result.hits += 1;
     }
     signalResults.set(candidate.signalKey, result);

@@ -18,6 +18,8 @@ export type ContractAnalysisEngine = {
   isWin: (signalKey: string, digit: number) => boolean;
 };
 
+export const MATCH_EXECUTION_DELAY_TICKS = 3;
+
 export type AnalysisEngineConfiguration = {
   signalWindow: number;
   targetDigit: number | null;
@@ -48,7 +50,10 @@ function countValidDigits(ticks: readonly LiveTick[]) {
   return counts;
 }
 
-function getTransitionPrediction(ticks: readonly LiveTick[]) {
+function getTransitionPrediction(
+  ticks: readonly LiveTick[],
+  horizon: number,
+) {
   const counts = Array<number>(DIGIT_COUNT).fill(0);
   const weights = Array<number>(DIGIT_COUNT).fill(0);
   const mostRecentTransition = Array<number>(DIGIT_COUNT).fill(-1);
@@ -56,14 +61,14 @@ function getTransitionPrediction(ticks: readonly LiveTick[]) {
   const currentDigit = ticks.at(-1)?.digit;
   if (currentDigit === undefined || !isValidDigit(currentDigit)) return null;
 
-  for (let index = ticks.length - 2; index >= 0; index -= 1) {
+  for (let index = ticks.length - horizon - 1; index >= 0; index -= 1) {
     const sourceDigit = ticks[index].digit;
-    const nextDigit = ticks[index + 1].digit;
+    const nextDigit = ticks[index + horizon].digit;
     if (!isValidDigit(sourceDigit) || !isValidDigit(nextDigit)) return null;
     if (sourceDigit !== currentDigit) continue;
 
     counts[nextDigit] += 1;
-    weights[nextDigit] += 0.97 ** (ticks.length - 2 - index);
+    weights[nextDigit] += 0.97 ** (ticks.length - horizon - 1 - index);
     if (mostRecentTransition[nextDigit] === -1) {
       mostRecentTransition[nextDigit] = index;
     }
@@ -181,7 +186,10 @@ function createMatchesDiffersEngine(
       let targetDigit = configuration.targetDigit;
       let transitionPrediction: ReturnType<typeof getTransitionPrediction> = null;
       if (contractType === 'match-digit' && targetDigit === null) {
-        transitionPrediction = getTransitionPrediction(analysisTicks);
+        transitionPrediction = getTransitionPrediction(
+          analysisTicks,
+          MATCH_EXECUTION_DELAY_TICKS,
+        );
         if (!transitionPrediction) return null;
         targetDigit = transitionPrediction.predictedDigit;
       } else if (targetDigit === null) {

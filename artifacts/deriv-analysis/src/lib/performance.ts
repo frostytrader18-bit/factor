@@ -1,5 +1,6 @@
 import type { ContractType } from './analysis-engine';
 import type { AnalysisEngineId } from './contract-engines.ts';
+import { isContractWin } from './contract-engines.ts';
 
 export type PredictionOutcomeStart = {
   id: string;
@@ -12,6 +13,7 @@ export type PredictionOutcomeStart = {
   marketLabel: string;
   startedAt: number;
   expiresAt: number;
+  targetTickOffset: number;
   baselineRate: number;
   backtestHits: number;
   backtestPredictions: number;
@@ -26,6 +28,7 @@ export type PredictionOutcomeRecord = PredictionOutcomeStart & {
   wins: number;
   losses: number;
   observedTicks: number;
+  pendingTicks: number;
   squaredProbabilityError: number;
   status: 'tracking' | 'complete' | 'replaced' | 'interrupted';
 };
@@ -89,6 +92,10 @@ export function isPredictionOutcomeRecord(value: unknown): value is PredictionOu
     && Number.isFinite(record.startedAt)
     && typeof record.expiresAt === 'number'
     && Number.isFinite(record.expiresAt)
+    && typeof record.targetTickOffset === 'number'
+    && Number.isInteger(record.targetTickOffset)
+    && record.targetTickOffset >= 0
+    && record.targetTickOffset <= 10
     && typeof record.baselineRate === 'number'
     && Number.isFinite(record.baselineRate)
     && record.baselineRate >= 0
@@ -126,6 +133,9 @@ export function isPredictionOutcomeRecord(value: unknown): value is PredictionOu
     && typeof record.observedTicks === 'number'
     && Number.isInteger(record.observedTicks)
     && record.observedTicks === record.wins + record.losses
+    && typeof record.pendingTicks === 'number'
+    && Number.isInteger(record.pendingTicks)
+    && record.pendingTicks >= 0
     && typeof record.squaredProbabilityError === 'number'
     && Number.isFinite(record.squaredProbabilityError)
     && record.squaredProbabilityError >= 0
@@ -171,10 +181,56 @@ function migratePerformanceRecord(value: unknown): PredictionOutcomeRecord | nul
     estimatedProbability: probability,
     wilsonUpperBound: upperBound,
     expectedValue: record.expectedValue ?? null,
+    targetTickOffset: Number.isInteger(record.targetTickOffset)
+      && Number(record.targetTickOffset) >= 0
+      && Number(record.targetTickOffset) <= 10
+      ? Number(record.targetTickOffset)
+      : 0,
     observedTicks,
+    pendingTicks: Number.isInteger(record.pendingTicks) && Number(record.pendingTicks) >= 0
+      ? Number(record.pendingTicks)
+      : 0,
     squaredProbabilityError,
   };
   return isPredictionOutcomeRecord(migrated) ? migrated : null;
+}
+
+export function applyPredictionTick(
+  outcome: PredictionOutcomeRecord,
+  actualDigit: number,
+): { outcome: PredictionOutcomeRecord; settled: boolean } {
+  if (!Number.isInteger(actualDigit) || actualDigit < 0 || actualDigit > 9) {
+    throw new RangeError('The actual tick digit must be an integer from 0 to 9.');
+  }
+
+  const pendingTicks = outcome.pendingTicks + 1;
+  if (outcome.targetTickOffset > 0 && pendingTicks < outcome.targetTickOffset) {
+    return {
+      outcome: { ...outcome, pendingTicks },
+      settled: false,
+    };
+  }
+
+  const won = isContractWin(
+    outcome.contractType,
+    outcome.signalKey,
+    outcome.digit,
+    actualDigit,
+  );
+  const updatedOutcome: PredictionOutcomeRecord = {
+    ...outcome,
+    pendingTicks,
+    wins: outcome.wins + Number(won),
+    losses: outcome.losses + Number(!won),
+    observedTicks: outcome.observedTicks + 1,
+    squaredProbabilityError: outcome.squaredProbabilityError
+      + (outcome.estimatedProbability - Number(won)) ** 2,
+  };
+  if (outcome.targetTickOffset > 0) {
+    updatedOutcome.status = 'complete';
+    return { outcome: updatedOutcome, settled: true };
+  }
+  return { outcome: updatedOutcome, settled: false };
 }
 
 export function parsePerformanceHistory(value: unknown): PredictionOutcomeRecord[] {
