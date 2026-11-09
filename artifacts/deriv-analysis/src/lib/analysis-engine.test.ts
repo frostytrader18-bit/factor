@@ -16,6 +16,14 @@ function createMarket(digitAt: (index: number) => number): LiveTick[] {
   });
 }
 
+function createTransitionMarket(length: number): LiveTick[] {
+  const pattern = [4, 8, 3, 3, 3, 4, 8, 3, 3, 3];
+  return Array.from({ length }, (_, index) => {
+    const digit = pattern[index % pattern.length];
+    return { price: `100.${digit}`, digit };
+  });
+}
+
 test('contract evaluation uses the specified digit barriers and parity', () => {
   assert.equal(isContractWin('match-digit', '4', 4, 4), true);
   assert.equal(isContractWin('match-digit', '4', 4, 5), false);
@@ -34,7 +42,17 @@ test('signal generation requires observations and uses the latest context', () =
   const signal = getContractSignal(createMarket(() => 7).slice(0, 10), 'match-digit');
   assert.equal(signal?.signalKey, '7');
   assert.equal(signal?.baselineRate, 0.1);
-  assert.equal(signal?.recentSampleSize, 10);
+  assert.equal(signal?.recentSampleSize, 9);
+});
+
+test('automatic MATCHES still returns a fallback when prior transition support is absent', () => {
+  const ticks = Array.from({ length: 10 }, (_, digit) => ({
+    price: `100.${digit}`,
+    digit,
+  }));
+  const signal = getContractSignal(ticks, 'match-digit');
+  assert.equal(signal?.signalKey, '9');
+  assert.equal(signal?.recentSampleSize, 0);
 });
 
 test('matches/differs, over/under, and parity signals keep independent configuration', () => {
@@ -93,8 +111,8 @@ test('walk-forward validation accepts a strong historical signal', () => {
     new Map([['R_100', ticks.slice(-10)]]),
   );
 
-  assert.equal(candidates.length, 10);
-  const zeroCandidate = candidates.find((candidate) => candidate.digit === 0);
+  assert.equal(candidates.length, 1);
+  const zeroCandidate = candidates[0];
   assert.ok(zeroCandidate);
   assert.equal(zeroCandidate.signalKey, '0');
   assert.equal(zeroCandidate.backtestPredictions, 700);
@@ -139,7 +157,7 @@ test('scan decisions use the prior 100 ticks plus the latest 10 fresh ticks with
   assert.equal(firstResult.backtestPredictions, secondResult.backtestPredictions);
 });
 
-test('scan rejects markets with fewer than 10 fresh ticks', () => {
+test('scan returns an unvalidated candidate when fewer than 10 fresh ticks arrive', () => {
   const ticks = createMarket(() => 0);
   const market = { symbol: 'R_100', label: 'Volatility 100 Index', ticks, tickVersion: 9 };
   const candidates = scanMarkets(
@@ -148,26 +166,39 @@ test('scan rejects markets with fewer than 10 fresh ticks', () => {
     new Map([['R_100', ticks.slice(-9)]]),
   );
 
-  assert.equal(candidates.length, 0);
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].freshTickCount, 9);
+  assert.equal(candidates[0].isValidated, false);
 });
 
-test('automatic MATCHES prediction selects the strongest walk-forward digit, not the most frequent recent digit', () => {
-  const ticks = createMarket((index) => (index < 900 ? 7 : 3));
-  const market = { symbol: 'R_100', label: 'Volatility 100 Index', ticks, tickVersion: 1 };
+test('automatic MATCHES predicts from recent digit transitions, not the most frequent digit', () => {
+  const ticks = createTransitionMarket(1_000);
+  const freshTicks = [
+    4, 8, 3, 3, 3, 4, 8, 3, 3, 4,
+  ].map((digit) => ({ price: `200.${digit}`, digit }));
+  const market = {
+    symbol: 'R_100',
+    label: 'Volatility 100 Index',
+    ticks: [...ticks, ...freshTicks],
+    tickVersion: freshTicks.length,
+  };
   const candidates = scanMarkets(
     [market],
     'match-digit',
-    new Map([['R_100', ticks.slice(-10)]]),
+    new Map([['R_100', freshTicks]]),
   );
-  const mostFrequentRecentDigit = getContractSignal(
-    ticks.slice(899, 999),
-    'match-digit',
-  )?.digit;
+  const digitCounts = [...ticks, ...freshTicks].reduce((counts, tick) => {
+    counts[tick.digit] += 1;
+    return counts;
+  }, Array<number>(10).fill(0));
+  const mostFrequentDigit = digitCounts.indexOf(Math.max(...digitCounts));
 
-  assert.equal(mostFrequentRecentDigit, 3);
-  assert.equal(candidates[0].digit, 7);
+  assert.equal(mostFrequentDigit, 3);
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].digit, 8);
   assert.equal(candidates[0].isValidated, true);
   assert.ok(candidates[0].backtestAccuracy > 0.8);
+  assert.equal(candidates[0].recentOccurrences, 22);
 });
 
 test('all contract predictions use their matching win rules on subsequent ticks', () => {
@@ -211,9 +242,10 @@ test('walk-forward validation retains but rejects a weak candidate', () => {
     [market],
     'match-digit',
     new Map([['R_100', ticks.slice(-10)]]),
+    { targetDigit: 0 },
   );
 
-  assert.equal(candidates.length, 10);
+  assert.equal(candidates.length, 1);
   assert.ok(candidates.every((candidate) => !candidate.isValidated));
   assert.ok(candidates.every((candidate) => candidate.wilsonLowerBound <= candidate.baselineRate));
 });
@@ -227,18 +259,15 @@ test('cross-market scan ranks each market candidate instead of hiding unvalidate
     tickVersion: 1,
   }));
   const scanTicks = new Map(markets.map((market) => [market.symbol, ticks.slice(-10)]));
-  const candidates = scanMarkets(markets, 'match-digit', scanTicks);
+  const candidates = scanMarkets(markets, 'match-digit', scanTicks, { targetDigit: 0 });
 
-  assert.equal(candidates.length, 130);
+  assert.equal(candidates.length, 13);
   assert.ok(candidates.every((candidate) => !candidate.isValidated));
   assert.equal(new Set(candidates.map((candidate) => candidate.symbol)).size, 13);
-  assert.ok(markets.every((market) => (
-    new Set(candidates.filter((candidate) => candidate.symbol === market.symbol)
-      .map((candidate) => candidate.digit)).size === 10
-  )));
+  assert.ok(candidates.every((candidate) => candidate.digit === 0));
 });
 
-test('validation excludes samples without enough pre-scan history', () => {
+test('scan returns an unvalidated prediction when pre-scan history is insufficient', () => {
   const ticks = createMarket(() => 0).slice(-399);
   const market = { symbol: 'R_100', label: 'Volatility 100 Index', ticks, tickVersion: 1 };
   const candidates = scanMarkets(
@@ -247,5 +276,38 @@ test('validation excludes samples without enough pre-scan history', () => {
     new Map([['R_100', ticks.slice(-10)]]),
   );
 
-  assert.equal(candidates.length, 0);
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].isValidated, false);
+  assert.equal(candidates[0].backtestPredictions, 279);
+});
+
+test('scan returns an unvalidated prediction when no fresh ticks arrived', () => {
+  const ticks = createMarket((index) => index % 10);
+  const market = { symbol: 'R_100', label: 'Volatility 100 Index', ticks, tickVersion: 0 };
+  const candidates = scanMarkets(
+    [market],
+    'match-digit',
+    new Map(),
+    { targetDigit: 3 },
+  );
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].freshTickCount, 0);
+  assert.equal(candidates[0].isValidated, false);
+});
+
+test('scan uses fewer than ten fresh ticks to produce a labeled fallback candidate', () => {
+  const ticks = createMarket(() => 0);
+  const freshTicks = ticks.slice(-2);
+  const market = { symbol: 'R_100', label: 'Volatility 100 Index', ticks, tickVersion: 2 };
+  const candidates = scanMarkets(
+    [market],
+    'match-digit',
+    new Map([['R_100', freshTicks]]),
+    { targetDigit: 0 },
+  );
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].freshTickCount, 2);
+  assert.equal(candidates[0].isValidated, false);
 });

@@ -48,6 +48,69 @@ function countValidDigits(ticks: readonly LiveTick[]) {
   return counts;
 }
 
+function getTransitionPrediction(ticks: readonly LiveTick[]) {
+  const counts = Array<number>(DIGIT_COUNT).fill(0);
+  const weights = Array<number>(DIGIT_COUNT).fill(0);
+  const mostRecentTransition = Array<number>(DIGIT_COUNT).fill(-1);
+  let support = 0;
+  const currentDigit = ticks.at(-1)?.digit;
+  if (currentDigit === undefined || !isValidDigit(currentDigit)) return null;
+
+  for (let index = ticks.length - 2; index >= 0; index -= 1) {
+    const sourceDigit = ticks[index].digit;
+    const nextDigit = ticks[index + 1].digit;
+    if (!isValidDigit(sourceDigit) || !isValidDigit(nextDigit)) return null;
+    if (sourceDigit !== currentDigit) continue;
+
+    counts[nextDigit] += 1;
+    weights[nextDigit] += 0.97 ** (ticks.length - 2 - index);
+    if (mostRecentTransition[nextDigit] === -1) {
+      mostRecentTransition[nextDigit] = index;
+    }
+    support += 1;
+  }
+
+  if (support === 0) {
+    const lastObservedDigit = ticks.at(-1)?.digit;
+    if (lastObservedDigit === undefined || !isValidDigit(lastObservedDigit)) return null;
+    if (ticks.length < 2) {
+      return {
+        currentDigit,
+        predictedDigit: (lastObservedDigit + 1) % DIGIT_COUNT,
+        matchingTransitions: 0,
+        transitionSupport: 0,
+      };
+    }
+
+    return {
+      currentDigit,
+      predictedDigit: ticks.at(-1)!.digit,
+      matchingTransitions: 0,
+      transitionSupport: 0,
+    };
+  }
+
+  let predictedDigit = -1;
+  let highestWeight = -1;
+  let latestTransitionIndex = -1;
+  for (let digit = 0; digit < DIGIT_COUNT; digit += 1) {
+    if (weights[digit] > highestWeight
+      || (weights[digit] === highestWeight
+        && mostRecentTransition[digit] > latestTransitionIndex)) {
+      highestWeight = weights[digit];
+      latestTransitionIndex = mostRecentTransition[digit];
+      predictedDigit = digit;
+    }
+  }
+
+  return {
+    currentDigit,
+    predictedDigit,
+    matchingTransitions: counts[predictedDigit],
+    transitionSupport: support,
+  };
+}
+
 function buildSignal(
   ticks: LiveTick[],
   analysisWindow: number,
@@ -115,14 +178,22 @@ function createMatchesDiffersEngine(
     getSignal(ticks) {
       const analysisTicks = ticks.slice(-analysisWindow);
       if (analysisTicks.length === 0) return null;
-      const counts = countValidDigits(analysisTicks);
-      if (!counts) return null;
-      const targetDigit = configuration.targetDigit ?? counts.reduce((best, count, digit) => (
-        count > counts[best] ? digit : best
-      ), analysisTicks.at(-1)!.digit);
+      let targetDigit = configuration.targetDigit;
+      let transitionPrediction: ReturnType<typeof getTransitionPrediction> = null;
+      if (contractType === 'match-digit' && targetDigit === null) {
+        transitionPrediction = getTransitionPrediction(analysisTicks);
+        if (!transitionPrediction) return null;
+        targetDigit = transitionPrediction.predictedDigit;
+      } else if (targetDigit === null) {
+        const counts = countValidDigits(analysisTicks);
+        if (!counts) return null;
+        targetDigit = counts.reduce((best, count, digit) => (
+          count > counts[best] ? digit : best
+        ), analysisTicks.at(-1)!.digit);
+      }
       const signalKey = String(targetDigit);
       const label = contractType === 'match-digit' ? `MATCH ${targetDigit}` : `DIFFERS FROM ${targetDigit}`;
-      return buildSignal(
+      const signal = buildSignal(
         ticks,
         analysisWindow,
         signalKey,
@@ -131,6 +202,14 @@ function createMatchesDiffersEngine(
         baselineRate,
         isWin,
       );
+      if (signal && transitionPrediction) {
+        return {
+          ...signal,
+          recentOccurrences: transitionPrediction.matchingTransitions,
+          recentSampleSize: transitionPrediction.transitionSupport,
+        };
+      }
+      return signal;
     },
     isWin,
   };

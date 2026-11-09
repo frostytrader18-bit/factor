@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Activity, Clock3, ShieldCheck, Signal, Target, Wifi } from 'lucide-react';
 import {
-  MIN_OUT_OF_SAMPLE_CALLS,
-  MIN_TRAINING_TICKS,
   FRESH_SCAN_TICK_COUNT,
   SCANNER_PRIOR_TICK_COUNT,
   isContractWin,
@@ -27,6 +25,7 @@ type ActivePrediction = ContractSignal & {
   marketSymbol: string;
   marketLabel: string;
   analyzedTicks: LiveTick[];
+  freshTickCount: number;
   backtestHits: number;
   backtestPredictions: number;
   backtestAccuracy: number;
@@ -62,7 +61,9 @@ function formatCountdown(seconds: number) {
 
 function settingsDigitLabel(contractType: ContractType, targetDigit: number | null) {
   const target = targetDigit === null
-    ? 'the most frequent digit in the analysis window'
+    ? contractType === 'match-digit'
+      ? 'the next digit estimated from recent digit transitions'
+      : 'the most frequent digit in the analysis window'
     : `configured digit ${targetDigit}`;
   return contractType === 'differ' ? `DIFFERS from ${target}` : `target ${target}`;
 }
@@ -106,10 +107,7 @@ export function DigitScannerView({
     'even-odd': 'EVEN / ODD',
   }[contractType];
   const readyMarkets = markets.filter((market) => (
-    market.ticks.length >= Math.max(
-      MIN_TRAINING_TICKS,
-      SCANNER_PRIOR_TICK_COUNT + FRESH_SCAN_TICK_COUNT,
-    ) + MIN_OUT_OF_SAMPLE_CALLS
+    market.ticks.length >= SCANNER_PRIOR_TICK_COUNT
   )).length;
   const rankedMarkets = scanResults ?? [];
   const topResult = rankedMarkets[0] ?? null;
@@ -180,14 +178,16 @@ export function DigitScannerView({
         setPredictionSecondsRemaining(0);
         setScanResults([]);
         setScanMessage(
-          `Insufficient history or fresh ticks. Markets with 10 new ticks: ${scannedMarketCount}/${marketsRef.current.length}.`,
+          `No usable tick history was available for a prediction. Markets with fresh ticks: ${scannedMarketCount}/${marketsRef.current.length}.`,
         );
         return;
       }
 
       const topCandidate = results[0];
       setScanResults(results);
-      setScanMessage(`Prediction: ${topCandidate.signalLabel} · ${topCandidate.label} · ${topCandidate.isValidated ? 'validated' : 'unconfirmed'} · ${scannedMarketCount}/${marketsRef.current.length} markets updated.`);
+      setScanMessage(
+        `Prediction: ${topCandidate.signalLabel} · ${topCandidate.label} · ${topCandidate.isValidated ? 'validated' : 'unconfirmed'} · ${topCandidate.freshTickCount}/${FRESH_SCAN_TICK_COUNT} fresh ticks · ${scannedMarketCount}/${marketsRef.current.length} markets had new ticks.`,
+      );
       callbacksRef.current.onSoundAlert('signal-found');
       const startedAt = Date.now();
       const expiresAt = startedAt + PREDICTION_VALIDITY_SECONDS * 1000;
@@ -223,6 +223,7 @@ export function DigitScannerView({
         analyzedTickCount: topCandidate.analyzedTickCount,
         analyzedWindowOccurrences: topCandidate.analyzedWindowOccurrences,
         analyzedTicks: topCandidate.analyzedTicks,
+        freshTickCount: topCandidate.freshTickCount,
         marketSymbol: topCandidate.symbol,
         marketLabel: topCandidate.label,
         backtestHits: topCandidate.backtestHits,
@@ -246,14 +247,14 @@ export function DigitScannerView({
         Math.ceil((finalDeadline - Date.now()) / 1000),
       ));
       setScanMessage(
-        `Analyzing the prior ${SCANNER_PRIOR_TICK_COUNT} ticks plus ${FRESH_SCAN_TICK_COUNT} fresh ticks.`,
+        `Analyzing the prior ${SCANNER_PRIOR_TICK_COUNT} ticks plus whatever fresh ticks arrived.`,
       );
 
       const scanTicksByMarket = new Map<string, LiveTick[]>();
       for (const market of marketsRef.current) {
         const freshTickCount = market.tickVersion
           - (scanStartTickVersionsRef.current.get(market.symbol) ?? market.tickVersion);
-        if (freshTickCount >= FRESH_SCAN_TICK_COUNT
+        if (freshTickCount > 0
           && freshTickCount <= market.ticks.length) {
           scanTicksByMarket.set(market.symbol, market.ticks.slice(-freshTickCount));
         }
@@ -452,12 +453,14 @@ export function DigitScannerView({
               </div>
               <span data-testid="scanner-digit-recurrence" className="font-mono-ui text-[8px] text-[#8e9db5]">
                 {displayedPrediction
-                  ? `${displayedPrediction.signalLabel}: ${displayedPrediction.recentOccurrences}/${displayedPrediction.recentSampleSize} recent wins · ${SCANNER_PRIOR_TICK_COUNT} prior + ${FRESH_SCAN_TICK_COUNT} fresh ticks`
+                  ? contractType === 'match-digit' && configuration.targetDigit === null
+                    ? `Transition model: ${displayedPrediction.analyzedTicks.at(-1)?.digit ?? '--'} → ${displayedPrediction.signalLabel.replace('MATCH ', '')} · ${displayedPrediction.recentOccurrences}/${displayedPrediction.recentSampleSize} matching transitions · ${SCANNER_PRIOR_TICK_COUNT} prior + ${displayedPrediction.freshTickCount} fresh`
+                    : `${displayedPrediction.signalLabel}: ${displayedPrediction.recentOccurrences}/${displayedPrediction.recentSampleSize} recent wins · ${SCANNER_PRIOR_TICK_COUNT} prior + ${displayedPrediction.freshTickCount} fresh`
                   : contractType === 'over' || contractType === 'under'
-                    ? `${SCANNER_PRIOR_TICK_COUNT} prior + ${FRESH_SCAN_TICK_COUNT} fresh ticks · ${contractType.toUpperCase()} ${configuration.barrier} barrier`
+                    ? `${SCANNER_PRIOR_TICK_COUNT} prior + available fresh ticks · ${contractType.toUpperCase()} ${configuration.barrier} barrier`
                     : contractType === 'even-odd'
-                      ? `${SCANNER_PRIOR_TICK_COUNT} prior + ${FRESH_SCAN_TICK_COUNT} fresh ticks · ${configuration.parity === 'auto' ? 'parity selected from the analysis window' : `${configuration.parity.toUpperCase()} selected`}`
-                      : `${SCANNER_PRIOR_TICK_COUNT} prior + ${FRESH_SCAN_TICK_COUNT} fresh ticks · ${settingsDigitLabel(contractType, configuration.targetDigit)}`}
+                      ? `${SCANNER_PRIOR_TICK_COUNT} prior + available fresh ticks · ${configuration.parity === 'auto' ? 'parity selected from the analysis window' : `${configuration.parity.toUpperCase()} selected`}`
+                      : `${SCANNER_PRIOR_TICK_COUNT} prior + available fresh ticks · ${settingsDigitLabel(contractType, configuration.targetDigit)}`}
               </span>
             </div>
 
@@ -466,7 +469,9 @@ export function DigitScannerView({
                 <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-[#236b8b] bg-[#0a1e2d] px-3 py-2">
                   <span className="font-mono-ui text-[8px] font-bold tracking-wider text-[#8ccbed]">HISTORICAL WALK-FORWARD HIT RATE</span>
                   <strong data-testid="scanner-walk-forward-hit-rate" className="font-mono-ui text-[10px] font-extrabold text-[#dce8f4]">
-                    {formatPercent(displayedPrediction.backtestAccuracy)} · {displayedPrediction.backtestHits}/{displayedPrediction.backtestPredictions}
+                    {displayedPrediction.backtestPredictions > 0
+                      ? `${formatPercent(displayedPrediction.backtestAccuracy)} · ${displayedPrediction.backtestHits}/${displayedPrediction.backtestPredictions}`
+                      : 'N/A · insufficient historical samples'}
                   </strong>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2.5">
@@ -516,7 +521,7 @@ export function DigitScannerView({
                     <p className="mt-2 text-[9px] text-[#82939a]">
                       {scanPhase === 'collecting'
                         ? `Collecting 10 fresh ticks across ${totalMarkets} markets; the prediction is decided in the final 5 seconds.`
-                        : `Analyzing 100 pre-scan ticks plus 10 fresh ticks. Markets with fewer than 10 fresh ticks are skipped.`}
+                        : `Using the prior 100 ticks plus any fresh ticks received. Low-data candidates remain unconfirmed.`}
                     </p>
                     <div className="mx-auto mt-3 h-1.5 max-w-sm overflow-hidden rounded-full bg-[#1a2636]">
                       <div

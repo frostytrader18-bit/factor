@@ -39,6 +39,7 @@ export type ContractSignal = {
 export type MarketCandidate = ScannedMarket & ContractSignal & {
   engineId: AnalysisEngineId;
   analyzedTicks: LiveTick[];
+  freshTickCount: number;
   backtestHits: number;
   backtestPredictions: number;
   backtestAccuracy: number;
@@ -61,7 +62,6 @@ export const MIN_OUT_OF_SAMPLE_CALLS = 300;
 export const SCANNER_PRIOR_TICK_COUNT = 100;
 export const FRESH_SCAN_TICK_COUNT = 10;
 const MIN_SIGNAL_TEST_CALLS = 30;
-const MIN_FRESH_SCAN_TICKS = FRESH_SCAN_TICK_COUNT;
 const BACKTEST_LIMIT = 700;
 export const RECENT_ANALYSIS_TICKS = 20;
 export const RECENT_DIGIT_WINDOW = 10;
@@ -227,16 +227,15 @@ export function scanMarkets(
 
   return markets
     .flatMap((market) => {
-      const scanTicks = scanTicksByMarket.get(market.symbol);
-      if (!scanTicks || scanTicks.length < MIN_FRESH_SCAN_TICKS || scanTicks.length > market.ticks.length) {
+      const scanTicks = scanTicksByMarket.get(market.symbol) ?? [];
+      if (scanTicks.length > market.ticks.length) {
         return [];
       }
 
       const historicalTicks = market.ticks.slice(0, market.ticks.length - scanTicks.length);
-      const candidateConfigurations = (
-        (contractType === 'match-digit' || contractType === 'differ')
+      if (historicalTicks.length === 0 && scanTicks.length === 0) return [];
+      const candidateConfigurations = contractType === 'differ'
         && normalizedConfiguration.targetDigit === null
-      )
         ? Array.from({ length: 10 }, (_, targetDigit) => ({
           ...normalizedConfiguration,
           targetDigit,
@@ -254,28 +253,22 @@ export function scanMarkets(
             candidateConfiguration.signalWindow + freshTicks.length,
           ),
         };
-        if (historicalTicks.length < Math.max(
-          MIN_TRAINING_TICKS,
-          decisionConfiguration.signalWindow,
-        ) + MIN_OUT_OF_SAMPLE_CALLS) {
-          return [];
-        }
-
         const engine = createContractAnalysisEngine(contractType, decisionConfiguration);
         const backtest = getWalkForwardResults(historicalTicks, contractType, decisionConfiguration);
-        if (backtest.predictions < MIN_OUT_OF_SAMPLE_CALLS) {
-          return [];
-        }
-
         const recentCandidate = engine.getSignal(decisionTicks);
         if (!recentCandidate) return [];
 
-        const result = backtest.signalResults.get(recentCandidate.signalKey);
-        if (!result || result.predictions < MIN_SIGNAL_TEST_CALLS) return [];
+        const result = backtest.signalResults.get(recentCandidate.signalKey)
+          ?? { hits: 0, predictions: 0 };
 
-        const backtestAccuracy = result.hits / result.predictions;
+        const backtestAccuracy = result.predictions > 0
+          ? result.hits / result.predictions
+          : 0;
         const interval = wilsonInterval(result.hits, result.predictions, zScore);
-        const isValidated = interval.lower > recentCandidate.baselineRate;
+        const isValidated = freshTicks.length === FRESH_SCAN_TICK_COUNT
+          && backtest.predictions >= MIN_OUT_OF_SAMPLE_CALLS
+          && result.predictions >= MIN_SIGNAL_TEST_CALLS
+          && interval.lower > recentCandidate.baselineRate;
         const status: EngineSignalStatus = isValidated
           ? 'VALID SIGNAL'
           : 'WEAK SIGNAL';
@@ -284,12 +277,15 @@ export function scanMarkets(
           ...recentCandidate,
           engineId: engine.id,
           analyzedTicks: decisionTicks.slice(-recentCandidate.analyzedTickCount),
+          freshTickCount: freshTicks.length,
           backtestHits: result.hits,
           backtestPredictions: result.predictions,
           backtestAccuracy,
           wilsonLowerBound: interval.lower,
           wilsonUpperBound: interval.upper,
-          estimatedProbability: backtestAccuracy,
+          estimatedProbability: result.predictions > 0
+            ? backtestAccuracy
+            : recentCandidate.baselineRate,
           expectedValue: null,
           status,
           rejectionReason: isValidated

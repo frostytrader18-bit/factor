@@ -198,7 +198,11 @@ export function MarketScannerDashboard({
               data-testid="select-scanner-target"
               className="rounded border border-[#285264] bg-[#0b202c] px-2 py-1 text-[9px] text-[#e1f3f5]"
             >
-              <option value="auto">AUTO · MOST FREQUENT</option>
+              <option value="auto">
+                {settings.contractType === 'match-digit'
+                  ? 'AUTO · TRANSITION MODEL'
+                  : 'AUTO · MOST FREQUENT'}
+              </option>
               {Array.from({ length: 10 }, (_, digit) => <option key={digit} value={digit}>{digit}</option>)}
             </select>
           </label>
