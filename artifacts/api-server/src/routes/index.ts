@@ -1,10 +1,10 @@
 import { Router, type IRouter } from "express";
-import accessRouter from "./access";
+import derivOAuthRouter from "./deriv-oauth";
 import healthRouter from "./health";
 
 const router: IRouter = Router();
 
-router.use(accessRouter);
 router.use(healthRouter);
+router.use(derivOAuthRouter);
 
 export default router;

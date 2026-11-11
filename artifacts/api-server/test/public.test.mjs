@@ -1,0 +1,99 @@
+import assert from "node:assert/strict";
+import { once } from "node:events";
+import test, { after } from "node:test";
+
+process.env.NODE_ENV = "test";
+
+const { default: app } = await import("../dist/index.mjs");
+const server = app.listen(0, "127.0.0.1");
+await once(server, "listening");
+const address = server.address();
+assert.ok(address && typeof address === "object");
+const baseUrl = `http://127.0.0.1:${address.port}`;
+
+after(async () => {
+  await new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+});
+
+test("app page and assets are publicly available without a login", async () => {
+  const indexHtml = await fetch(baseUrl);
+  const html = await indexHtml.text();
+  assert.equal(indexHtml.status, 200);
+  assert.match(html, /type="module"/);
+  assert.match(html, /<title>PULSE-FACTOR<\/title>/);
+  assert.match(html, /href="https:\/\/pulsefactor\.space\/"/);
+  assert.match(html, /href="\/icons\/pulsefactor-192\.png"/);
+  assert.doesNotMatch(html, /Enter your access key|UNLOCK APP/);
+
+  const callbackPage = await fetch(`${baseUrl}/oauth/callback?code=example`, { redirect: "manual" });
+  assert.equal(callbackPage.status, 303);
+  assert.match(callbackPage.headers.get("location") ?? "", /deriv_oauth_error=invalid_state/);
+
+  const oauthLogin = await fetch(`${baseUrl}/api/oauth/deriv/login`, { redirect: "manual" });
+  assert.equal(oauthLogin.status, 302);
+  const oauthUrl = new URL(oauthLogin.headers.get("location"));
+  assert.equal(oauthUrl.origin, "https://auth.deriv.com");
+  assert.equal(oauthUrl.pathname, "/oauth2/auth");
+  assert.equal(oauthUrl.searchParams.get("client_id"), "34VWBd5pBISkAMEF3Zxm7");
+  assert.equal(oauthUrl.searchParams.get("redirect_uri"), "https://pulsefactor.space/oauth/callback");
+  assert.equal(oauthUrl.searchParams.get("response_type"), "code");
+  assert.equal(oauthUrl.searchParams.get("code_challenge_method"), "S256");
+
+  const manifestResponse = await fetch(`${baseUrl}/manifest.webmanifest`);
+  assert.equal(manifestResponse.status, 200);
+  const manifest = await manifestResponse.json();
+  assert.equal(manifest.name, "PULSE-FACTOR");
+  assert.equal(manifest.short_name, "PULSE-FACTOR");
+  assert.equal(manifest.icons[0].src, "./icons/pulsefactor-192.png");
+  assert.equal(manifest.icons[1].src, "./icons/pulsefactor-512.png");
+
+  for (const assetPath of [
+    "/pulsefactor-brand.png",
+    "/icons/pulsefactor-192.png",
+    "/icons/pulsefactor-512.png",
+  ]) {
+    const logo = await fetch(`${baseUrl}${assetPath}`);
+    assert.equal(logo.status, 200);
+    assert.match(logo.headers.get("content-type") ?? "", /image\/png/);
+  }
+
+  for (const obsoleteAsset of [
+    "/favicon.svg",
+    "/icons/d-pulse-192.png",
+    "/icons/d-pulse-512.png",
+    "/pulsefactor-wordmark.png",
+  ]) {
+    const response = await fetch(`${baseUrl}${obsoleteAsset}`);
+    assert.equal(response.status, 404);
+  }
+
+  const appScript = html.match(/src="([^"]+\.js)"/)?.[1];
+  assert.ok(appScript);
+  const asset = await fetch(new URL(appScript, baseUrl));
+  assert.equal(asset.status, 200);
+  assert.match(asset.headers.get("content-type") ?? "", /javascript/);
+  const bundle = await asset.text();
+  assert.match(bundle, /PULSE-FACTOR/);
+  assert.match(bundle, /\/icons\/pulsefactor-192\.png/);
+  assert.match(bundle, /https:\/\/pulsefactor\.space\//);
+  assert.match(bundle, /DERIV LOGIN/);
+  assert.match(bundle, /button-api-token-login/);
+  assert.match(bundle, /CONNECT WITH API TOKEN/);
+  assert.match(bundle, /api\/oauth\/deriv\/token/);
+  assert.match(bundle, /SIGN UP/);
+  assert.match(bundle, /api\/oauth\/deriv\/login/);
+  assert.match(bundle, /api\/oauth\/deriv\/session/);
+  assert.match(bundle, /t=439FPLA37FCH/);
+  assert.doesNotMatch(bundle, /ONE-MARKET/);
+});
+
+test("API routes remain available and obsolete access routes are removed", async () => {
+  const health = await fetch(`${baseUrl}/api/healthz`);
+  assert.equal(health.status, 200);
+  assert.deepEqual(await health.json(), { status: "ok" });
+
+  const access = await fetch(`${baseUrl}/api/access/session`);
+  assert.equal(access.status, 404);
+});

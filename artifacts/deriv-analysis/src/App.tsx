@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
@@ -23,16 +23,18 @@ import {
   Download,
   Gauge,
   KeyRound,
+  LogIn,
   Radio,
   RefreshCw,
   Settings2,
   ShieldCheck,
   Signal,
+  UserPlus,
   Wifi,
   X,
 } from 'lucide-react';
 import { ActivityLogView, type ActivityRecord } from './components/analysis/ActivityLogView';
-import { useAppLock } from './components/access-lock';
+import { DERIV_SIGNUP_URL } from '@/lib/deriv-oauth';
 import {
   MarketScannerDashboard,
 } from './components/analysis/MarketScannerDashboard';
@@ -236,11 +238,15 @@ const EMPTY_LIVE_MARKET_DATA: LiveMarketData = {
 };
 
 function Home() {
-  const { lockApp } = useAppLock();
   const [markets, setMarkets] = useState<MarketOption[]>(DEFAULT_MARKETS);
   const [appPreferences, setAppPreferences] = useState<AppPreferences>(readAppPreferences);
   const { marketSymbol, autoScan, soundAlertsEnabled } = appPreferences;
   const [notice, setNotice] = useState('');
+  const [derivConnected, setDerivConnected] = useState(false);
+  const [apiTokenDialogOpen, setApiTokenDialogOpen] = useState(false);
+  const [apiTokenInput, setApiTokenInput] = useState('');
+  const [apiTokenError, setApiTokenError] = useState('');
+  const [apiTokenSubmitting, setApiTokenSubmitting] = useState(false);
   const [installPromptEvent, setInstallPromptEvent] = useState<BeforeInstallPromptEvent | null>(null);
   const [isAppInstalled, setIsAppInstalled] = useState(false);
   const [settings, setSettings] = useState<WorkspaceSettings>(readWorkspaceSettings);
@@ -273,6 +279,45 @@ function Home() {
   const [activityEntries, setActivityEntries] = useState<ActivityRecord[]>([
     { id: 2, time: 'READY', title: 'Connecting to live market feed', detail: 'Waiting for public Deriv tick data.', tone: 'blue' },
   ]);
+
+  useEffect(() => {
+    let active = true;
+    const oauthError = new URLSearchParams(window.location.search).get('deriv_oauth_error');
+    if (oauthError) {
+      const messages: Record<string, string> = {
+        authorization_denied: 'Deriv sign-in was cancelled.',
+        invalid_callback: 'Deriv returned an incomplete sign-in response. Please try again.',
+        invalid_state: 'Deriv sign-in could not be verified. Please try again.',
+        token_exchange_failed: 'Deriv could not complete sign-in. Please try again.',
+      };
+      setNotice(messages[oauthError] ?? 'Deriv sign-in failed. Please try again.');
+      window.history.replaceState(null, '', '/');
+    }
+
+    void fetch('/api/oauth/deriv/session', { cache: 'no-store' })
+      .then(async (response) => {
+        if (response.status === 401) {
+          if (active) setDerivConnected(false);
+          return;
+        }
+        if (!response.ok) {
+          throw new Error(`Deriv session check failed with HTTP ${response.status}.`);
+        }
+        const result: unknown = await response.json();
+        if (!result || typeof result !== 'object' || !('authenticated' in result) || result.authenticated !== true) {
+          throw new Error('Deriv session check returned an invalid response.');
+        }
+        if (active) setDerivConnected(true);
+      })
+      .catch((error: unknown) => {
+        console.error('Unable to check the Deriv login session.', error);
+        if (active) setNotice('Deriv login status is temporarily unavailable.');
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -416,7 +461,7 @@ function Home() {
           }
         })
         .catch((error: unknown) => {
-          console.error('Unable to remove the ONE-MARKET offline app worker.', error);
+          console.error('Unable to remove the PULSE-FACTOR offline app worker.', error);
         });
     }
     if ('caches' in window) {
@@ -427,7 +472,7 @@ function Home() {
             .map((name) => caches.delete(name)),
         ))
         .catch((error: unknown) => {
-          console.error('Unable to remove the cached ONE-MARKET app shell.', error);
+          console.error('Unable to remove the cached PULSE-FACTOR app shell.', error);
         });
     }
 
@@ -438,7 +483,7 @@ function Home() {
     const handleAppInstalled = () => {
       setIsAppInstalled(true);
       setInstallPromptEvent(null);
-      setNotice('ONE-MARKET installed.');
+      setNotice('PULSE-FACTOR installed.');
     };
 
     setIsAppInstalled(window.matchMedia('(display-mode: standalone)').matches);
@@ -551,9 +596,50 @@ function Home() {
     recordActivity('Live market changed', `Subscribing to ${selectedMarket.label}.`, 'cyan');
   };
 
+  const submitApiToken = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setApiTokenError('');
+    setApiTokenSubmitting(true);
+    const token = apiTokenInput;
+    setApiTokenInput('');
+    try {
+      const response = await fetch('/api/oauth/deriv/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      });
+
+      if (!response.ok) {
+        const result: unknown = await response.json();
+        const message = result
+          && typeof result === 'object'
+          && 'error' in result
+          && typeof result.error === 'string'
+          ? result.error
+          : 'Deriv could not verify this API token.';
+        setApiTokenError(message);
+        return;
+      }
+
+      const result: unknown = await response.json();
+      if (!result || typeof result !== 'object' || !('authenticated' in result) || result.authenticated !== true) {
+        throw new Error('Deriv API token verification returned an invalid response.');
+      }
+
+      setApiTokenDialogOpen(false);
+      setDerivConnected(true);
+      setNotice('Connected to Deriv with an API token.');
+    } catch (error) {
+      console.error('Unable to verify the Deriv API token.', error);
+      setApiTokenError('Could not reach the server to verify your token. Try again shortly.');
+    } finally {
+      setApiTokenSubmitting(false);
+    }
+  };
+
   const installApp = async () => {
     if (!installPromptEvent) {
-      setNotice('To install ONE-MARKET, open your browser menu and select Install app or Add to Home Screen.');
+      setNotice('To install PULSE-FACTOR, open your browser menu and select Install app or Add to Home Screen.');
       return;
     }
 
@@ -562,11 +648,11 @@ function Home() {
       const { outcome } = await installPromptEvent.userChoice;
       setInstallPromptEvent(null);
       if (outcome === 'accepted') {
-        setNotice('ONE-MARKET is installing.');
+        setNotice('PULSE-FACTOR is installing.');
       }
     } catch (error) {
-      console.error('Unable to start ONE-MARKET installation.', error);
-      setNotice('ONE-MARKET could not be installed. Try the install option in your browser menu.');
+      console.error('Unable to start PULSE-FACTOR installation.', error);
+      setNotice('PULSE-FACTOR could not be installed. Try the install option in your browser menu.');
     }
   };
 
@@ -1245,19 +1331,46 @@ function Home() {
   return (
     <main className="dashboard-backdrop min-h-[100dvh] px-3 pb-8 pt-3 text-[#dce6ef] sm:px-3 sm:pt-4">
       <div className="mx-auto max-w-[1440px]">
-        <header className="topbar mb-4 flex flex-wrap items-center gap-3 border-b border-[#263441] pb-3 sm:mb-6 sm:pb-4">
+        <header className="topbar mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-[#263441] pb-3 sm:mb-6 sm:pb-4">
           <div className="flex items-center gap-3">
-            <div className="brand-mark grid h-10 w-10 place-items-center rounded-xl border border-[#b89a57]/50 bg-[#17232a] text-[#d3b66e] shadow-[inset_0_0_16px_rgba(202,172,97,.08)]">
-              <Activity size={20} strokeWidth={1.8} />
-            </div>
+            <img src="/icons/pulsefactor-192.png" alt="" className="h-12 w-12 shrink-0 rounded-xl border border-[#d6ad51]/50 object-cover shadow-[0_0_18px_rgba(177,70,255,.25)]" />
             <div>
-              <div className="ml-auto flex items-center gap-2">
-                <span className="font-display text-[22px] font-bold leading-none tracking-[.09em] text-[#f2f0e9]">ONE-MARKET</span>
-              </div>
+              <span className="font-display text-[18px] font-bold leading-none tracking-[.08em] text-[#f2f0e9] sm:text-[22px]">PULSE-FACTOR</span>
               <p className="mt-1 font-mono-ui text-[8px] tracking-[.12em] text-[#7f929e]">LIVE MARKET ANALYSIS</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            {derivConnected ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void fetch('/api/oauth/deriv/session', { method: 'DELETE' })
+                    .then((response) => {
+                      if (!response.ok) throw new Error(`Deriv logout failed with HTTP ${response.status}.`);
+                      setDerivConnected(false);
+                      setNotice('Disconnected from Deriv.');
+                    })
+                    .catch((error: unknown) => {
+                      console.error('Unable to clear the Deriv session.', error);
+                      setNotice('Deriv could not be disconnected. Please try again.');
+                    });
+                }}
+                data-testid="button-deriv-login"
+                className="flex h-9 items-center gap-1.5 rounded-lg border border-[#7651bc]/70 bg-[#261b3d]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#d5b9ff] transition hover:border-[#ad7cff] hover:bg-[#352255] sm:px-3"
+              >
+                <LogIn size={13} /> DERIV CONNECTED
+              </button>
+            ) : (
+              <a href="/api/oauth/deriv/login" data-testid="button-deriv-login" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#7651bc]/70 bg-[#261b3d]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#d5b9ff] transition hover:border-[#ad7cff] hover:bg-[#352255] sm:px-3">
+                <LogIn size={13} /> DERIV LOGIN
+              </a>
+            )}
+            <button type="button" onClick={() => { setApiTokenError(''); setApiTokenDialogOpen(true); }} data-testid="button-api-token-login" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#276e79]/70 bg-[#102c35]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#9be7ef] transition hover:border-[#54d8d6] hover:bg-[#164348] sm:px-3">
+              <KeyRound size={13} /> API TOKEN
+            </button>
+            <a href={DERIV_SIGNUP_URL} target="_blank" rel="noopener noreferrer" data-testid="button-deriv-signup" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#d6ad51]/60 bg-[#342918]/75 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#f3d982] transition hover:border-[#ffdc72] hover:bg-[#4a381d] sm:px-3">
+              <UserPlus size={13} /> SIGN UP
+            </a>
             {!isAppInstalled && (
               <button type="button" onClick={installApp} data-testid="button-install-app" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#1c7778]/60 bg-[#103334]/70 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#71e2d6] transition hover:border-[#54d8d6] hover:bg-[#164348] sm:px-3">
                 <Download size={13} /> INSTALL APP
@@ -1273,9 +1386,6 @@ function Home() {
             <button type="button" onClick={() => { setSettingsDraft(settings); setSettingsOpen(true); }} aria-label="Settings" data-testid="button-settings" className="grid h-9 w-9 place-items-center rounded-lg border border-[#263441] bg-[#101a22] text-[#a5b2bc] transition hover:border-[#447985] hover:text-[#54d8d6]">
               <Settings2 size={16} />
             </button>
-            <button type="button" onClick={() => { void lockApp().catch((error: unknown) => setNotice(error instanceof Error ? error.message : 'The app could not be locked. Try again.')); }} aria-label="Lock app" title="Lock app" data-testid="button-lock-app" className="grid h-9 w-9 place-items-center rounded-lg border border-[#263441] bg-[#101a22] text-[#a5b2bc] transition hover:border-[#447985] hover:text-[#54d8d6]">
-              <KeyRound size={15} />
-            </button>
           </div>
         </header>
 
@@ -1286,6 +1396,63 @@ function Home() {
         </nav>
 
         {notice && <div role="status" data-testid="status-notice" className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-[#1f7374]/50 bg-[#0e3034] px-3 py-2.5 text-[11px] text-[#9be7df] rise-in"><span>{notice}</span><button type="button" onClick={() => setNotice('')} data-testid="button-dismiss-notice" aria-label="Dismiss notice"><X size={14} /></button></div>}
+
+        <Dialog
+          open={apiTokenDialogOpen}
+          onOpenChange={(open) => {
+            setApiTokenDialogOpen(open);
+            if (!open) {
+              setApiTokenInput('');
+              setApiTokenError('');
+            }
+          }}
+        >
+          <DialogContent className="w-[calc(100%-1.5rem)] max-w-md border-[#276e79] bg-[#07141f] p-5 text-[#dce6ef] shadow-[0_0_40px_rgba(16,190,205,.16)] sm:p-6">
+            <DialogHeader className="pr-7 text-left">
+              <DialogTitle className="flex items-center gap-2 font-display text-2xl tracking-wide text-[#eff4ff]">
+                <KeyRound size={20} className="text-[#43d6e5]" /> CONNECT WITH API TOKEN
+              </DialogTitle>
+              <DialogDescription className="text-xs leading-relaxed text-[#8fa4b2]">
+                Paste a Deriv personal API token. It is sent securely to the server for verification and kept in an HttpOnly session cookie, not browser storage.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={(event) => { void submitApiToken(event); }} className="space-y-4">
+              <label className="block space-y-2">
+                <span className="block font-mono-ui text-[10px] font-bold tracking-[.12em] text-[#82dce5]">DERIV API TOKEN</span>
+                <input
+                  type="password"
+                  name="deriv-api-token"
+                  value={apiTokenInput}
+                  onChange={(event) => setApiTokenInput(event.target.value)}
+                  autoComplete="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  required
+                  maxLength={8192}
+                  data-testid="input-deriv-api-token"
+                  aria-invalid={Boolean(apiTokenError)}
+                  aria-describedby={apiTokenError ? 'deriv-api-token-error' : 'deriv-api-token-help'}
+                  className="w-full rounded-lg border border-[#285264] bg-[#0b202c] px-3 py-2.5 font-mono-ui text-sm text-[#e1f3f5] outline-none focus:border-[#3dd5e3]"
+                  placeholder="Paste your token"
+                />
+              </label>
+              <p id="deriv-api-token-help" className="text-[11px] leading-relaxed text-[#8299a5]">
+                Create a token with only the permissions you need in your Deriv account.
+                {' '}
+                <a href="https://app.deriv.com/account/api-token" target="_blank" rel="noopener noreferrer" className="font-semibold text-[#71dbe4] underline underline-offset-2 hover:text-[#b4f7ff]">Manage API tokens</a>
+              </p>
+              {apiTokenError && <p id="deriv-api-token-error" role="alert" className="text-xs text-[#ffaaa0]">{apiTokenError}</p>}
+              <DialogFooter className="gap-2 sm:flex-row">
+                <button type="button" onClick={() => setApiTokenDialogOpen(false)} disabled={apiTokenSubmitting} data-testid="button-cancel-api-token" className="rounded-lg border border-[#29404d] bg-[#101d27] px-4 py-2 text-xs font-bold text-[#aebec8] transition hover:border-[#527181] disabled:opacity-50">
+                  CANCEL
+                </button>
+                <button type="submit" disabled={apiTokenSubmitting || apiTokenInput.length === 0} data-testid="button-submit-api-token" className="rounded-lg border border-[#1e9e9c] bg-gradient-to-r from-[#087b83] to-[#136a91] px-4 py-2 text-xs font-extrabold tracking-wide text-white shadow-[0_4px_16px_rgba(24,184,190,.16)] transition hover:brightness-110 disabled:cursor-wait disabled:opacity-50">
+                  {apiTokenSubmitting ? 'VERIFYING…' : 'CONNECT'}
+                </button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
           <DialogContent className="w-[calc(100%-1.5rem)] max-w-md border-[#246778] bg-[#07141f] p-5 text-[#dce6ef] shadow-[0_0_40px_rgba(16,190,205,.16)] sm:p-6">
@@ -1676,8 +1843,8 @@ function Home() {
               <p className="flex items-start gap-1.5 px-1 pt-0.5 text-[9px] leading-relaxed text-[#7d8f98]"><AlertTriangle size={11} className="mt-0.5 shrink-0 text-[#c4a754]" /> {feedError ?? (feedStatus === 'live' ? `Receiving live ${market.label} ticks. No trading account is connected.` : 'Connecting to the public Deriv tick feed. No trading account is connected.')}</p>
               <div className="flex items-center gap-1.5 border-t border-[#273842] px-1 pt-2 font-mono-ui text-[9px] text-[#7d8f98]">
                 <span>Powered by</span>
-                <a href="https://dbotpulse.site" target="_blank" rel="noopener noreferrer" className="rounded px-1 py-0.5 font-bold tracking-wider text-[#71e2d6] transition hover:bg-[#103334] hover:text-[#a0fff0] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71e2d6]">
-                  DBOTPULSE
+                <a href="https://pulsefactor.space/" target="_blank" rel="noopener noreferrer" className="rounded px-1 py-0.5 font-bold tracking-wider text-[#71e2d6] transition hover:bg-[#103334] hover:text-[#a0fff0] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71e2d6]">
+                  PULSE-FACTOR
                 </a>
               </div>
             </div>}

@@ -4,11 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node ./build.mjs && node --env-file=.env.local --enable-source-maps ./dist/server.mjs",
-    "setup:access": "node ./scripts/setup-access.mjs",
+    "dev": "node ./build.mjs && node --enable-source-maps ./dist/server.mjs",
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/server.mjs",
-    "test:access": "node --test test/access.test.mjs",
+    "test:public": "node --test test/public.test.mjs test/deriv-oauth.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

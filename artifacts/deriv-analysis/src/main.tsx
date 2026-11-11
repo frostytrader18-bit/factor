@@ -1,7 +1,6 @@
 import { createRoot } from 'react-dom/client';
 
 import App from './App';
-import { AccessGate } from './components/access-lock';
 import { ErrorBoundary } from '@/components/error-boundary';
 
 import './index.css';
@@ -13,8 +12,6 @@ createRoot(document.getElementById('root')!, {
   },
 }).render(
   <ErrorBoundary>
-    <AccessGate>
-      <App />
-    </AccessGate>
+    <App />
   </ErrorBoundary>,
 );
