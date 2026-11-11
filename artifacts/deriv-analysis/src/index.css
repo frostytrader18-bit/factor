@@ -218,6 +218,111 @@
 .ambient-orb-b {
   animation-delay: -5s;
 }
+.access-market-chart {
+  opacity: .96;
+  mask-image: radial-gradient(ellipse at center, #000 12%, rgba(0, 0, 0, .88) 65%, transparent 100%);
+}
+.access-trading-backdrop {
+  --access-pointer-x: 50%;
+  --access-pointer-y: 50%;
+}
+.access-trading-backdrop::before,
+.access-trading-backdrop::after {
+  position: absolute;
+  z-index: 1;
+  content: '';
+  pointer-events: none;
+}
+.access-trading-backdrop::before {
+  inset: 18px;
+  opacity: .32;
+  background:
+    linear-gradient(#9af4ff, #9af4ff) left top / 34px 1px no-repeat,
+    linear-gradient(#9af4ff, #9af4ff) left top / 1px 34px no-repeat,
+    linear-gradient(#9af4ff, #9af4ff) right top / 34px 1px no-repeat,
+    linear-gradient(#9af4ff, #9af4ff) right top / 1px 34px no-repeat,
+    linear-gradient(#9af4ff, #9af4ff) left bottom / 34px 1px no-repeat,
+    linear-gradient(#9af4ff, #9af4ff) left bottom / 1px 34px no-repeat,
+    linear-gradient(#9af4ff, #9af4ff) right bottom / 34px 1px no-repeat,
+    linear-gradient(#9af4ff, #9af4ff) right bottom / 1px 34px no-repeat;
+}
+.access-trading-backdrop::after {
+  inset: 0;
+  opacity: .11;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 3px,
+    rgba(143, 230, 255, .18) 4px,
+    transparent 5px
+  );
+  animation: access-scanlines 12s linear infinite;
+}
+.access-pointer-glow {
+  background: radial-gradient(
+    420px circle at var(--access-pointer-x) var(--access-pointer-y),
+    rgba(88, 225, 255, .12),
+    rgba(86, 148, 255, .045) 34%,
+    transparent 68%
+  );
+  transition: opacity .25s ease;
+}
+.access-neon-haze {
+  background:
+    radial-gradient(ellipse at 20% 28%, rgba(26, 196, 255, .18), transparent 34%),
+    radial-gradient(ellipse at 82% 34%, rgba(164, 71, 255, .16), transparent 32%),
+    radial-gradient(ellipse at 52% 82%, rgba(19, 255, 190, .12), transparent 38%);
+  filter: blur(28px);
+  mix-blend-mode: screen;
+  animation: access-neon-drift 14s ease-in-out infinite alternate;
+}
+.access-glass-card {
+  border: 1px solid rgba(227, 250, 255, .34);
+  background:
+    linear-gradient(145deg, rgba(214, 249, 255, .105), rgba(122, 188, 213, .035) 44%, rgba(11, 33, 48, .13)),
+    rgba(13, 35, 51, .12);
+  -webkit-backdrop-filter: blur(38px) saturate(175%) brightness(1.12);
+  backdrop-filter: blur(38px) saturate(175%) brightness(1.12);
+  box-shadow:
+    0 32px 100px rgba(0, 7, 18, .4),
+    0 8px 32px rgba(102, 222, 255, .08),
+    inset 0 1px 0 rgba(255, 255, 255, .42),
+    inset 1px 0 0 rgba(255, 255, 255, .13),
+    inset -1px 0 0 rgba(157, 229, 255, .1),
+    inset 0 -1px 0 rgba(188, 243, 255, .12);
+}
+.access-glass-highlight {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .84), rgba(162, 240, 255, .72), transparent);
+  box-shadow: 0 0 18px rgba(147, 235, 255, .38);
+}
+.access-glass-input {
+  border: 1px solid rgba(221, 247, 255, .3);
+  background: linear-gradient(135deg, rgba(255, 255, 255, .105), rgba(255, 255, 255, .025));
+  -webkit-backdrop-filter: blur(22px) saturate(165%);
+  backdrop-filter: blur(22px) saturate(165%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .19),
+    inset 0 -10px 24px rgba(1, 16, 29, .14),
+    0 8px 22px rgba(0, 8, 20, .1);
+}
+.access-glass-input:focus {
+  background: linear-gradient(135deg, rgba(255, 255, 255, .15), rgba(105, 212, 243, .055));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .24), 0 0 28px rgba(94, 224, 255, .11);
+}
+.access-glass-button {
+  border: 1px solid rgba(202, 249, 255, .48);
+  background: linear-gradient(115deg, rgba(126, 238, 242, .27), rgba(92, 207, 220, .16) 52%, rgba(138, 187, 255, .24));
+  -webkit-backdrop-filter: blur(18px) saturate(175%);
+  backdrop-filter: blur(18px) saturate(175%);
+  box-shadow:
+    0 12px 32px rgba(32, 180, 218, .13),
+    inset 0 1px 0 rgba(255, 255, 255, .55),
+    inset 0 -1px 0 rgba(224, 252, 255, .13);
+}
+.access-glass-button:hover:not(:disabled) {
+  background: linear-gradient(115deg, rgba(126, 238, 242, .38), rgba(92, 207, 220, .24) 52%, rgba(138, 187, 255, .34));
+  box-shadow: 0 14px 36px rgba(32, 180, 218, .2), inset 0 1px 0 rgba(255, 255, 255, .7);
+}
 .gradient-heading {
   background: linear-gradient(100deg, #4ce9d4 0%, #57c7ff 47%, #bd88ff 100%);
   background-clip: text;
@@ -402,6 +507,14 @@ details[open] .details-chevron {
   from { transform: translate3d(-8px, 5px, 0) scale(.94); opacity: .72; }
   to { transform: translate3d(18px, -12px, 0) scale(1.08); opacity: 1; }
 }
+@keyframes access-neon-drift {
+  from { transform: translate3d(-2%, 1%, 0) scale(.96); filter: blur(28px) hue-rotate(0deg); }
+  to { transform: translate3d(2%, -1%, 0) scale(1.04); filter: blur(36px) hue-rotate(28deg); }
+}
+@keyframes access-scanlines {
+  from { transform: translateY(-12px); }
+  to { transform: translateY(12px); }
+}
 @keyframes gradient-travel {
   0%, 100% { background-position: 0% 50%; }
   50% { background-position: 100% 50%; }
@@ -430,148 +543,176 @@ details[open] .details-chevron {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
 }
 
-html[data-workspace-theme="aurora"] body {
-  background-image:
-    radial-gradient(ellipse at 12% 10%, rgba(108, 78, 223, .2), transparent 38%),
-    radial-gradient(ellipse at 88% 18%, rgba(28, 161, 206, .15), transparent 36%),
-    radial-gradient(ellipse at 50% 100%, rgba(53, 65, 160, .16), transparent 45%);
+:root {
+  --theme-accent: 125, 232, 255;
+  --theme-secondary: 99, 164, 255;
+  --theme-highlight: 192, 231, 255;
+  --theme-glow: 92, 207, 255;
+  --theme-bg: 5, 15, 29;
+  --theme-heading: linear-gradient(100deg, #d5f7ff, #76d9ff 52%, #a8c8ff);
 }
-html[data-workspace-theme="aurora"] .vibrant-frame,
-html[data-workspace-theme="aurora"] #scanner-section [data-testid="view-digit-scanner"] > section {
-  border-color: rgba(165, 133, 255, .78) !important;
-  box-shadow: inset 0 0 36px rgba(104, 78, 196, .1), 0 0 28px rgba(112, 90, 233, .16);
+html[data-workspace-theme="arctic"] {
+  --theme-accent: 125, 232, 255;
+  --theme-secondary: 99, 164, 255;
+  --theme-highlight: 192, 231, 255;
+  --theme-glow: 92, 207, 255;
+  --theme-bg: 5, 15, 29;
+  --theme-heading: linear-gradient(100deg, #d5f7ff, #76d9ff 52%, #a8c8ff);
 }
-html[data-workspace-theme="aurora"] .gradient-heading {
-  background-image: linear-gradient(100deg, #a9a0ff 0%, #72bdff 52%, #d29aff 100%);
+html[data-workspace-theme="nebula"] {
+  --theme-accent: 196, 153, 255;
+  --theme-secondary: 104, 126, 255;
+  --theme-highlight: 231, 197, 255;
+  --theme-glow: 167, 107, 255;
+  --theme-bg: 13, 8, 29;
+  --theme-heading: linear-gradient(100deg, #ffc4ef, #ba9aff 48%, #76d8ff);
 }
-html[data-workspace-theme="aurora"] .preview-badge {
-  border-color: rgba(159, 130, 255, .7) !important;
-  background: linear-gradient(110deg, rgba(47, 37, 91, .86), rgba(22, 50, 82, .6)) !important;
+html[data-workspace-theme="solar"] {
+  --theme-accent: 255, 190, 91;
+  --theme-secondary: 255, 103, 91;
+  --theme-highlight: 255, 222, 153;
+  --theme-glow: 255, 132, 71;
+  --theme-bg: 27, 11, 12;
+  --theme-heading: linear-gradient(100deg, #fff0a8, #ffae57 50%, #ff6f73);
 }
-html[data-workspace-theme="aurora"] .market-picker,
-html[data-workspace-theme="aurora"] [data-testid="digit-key-insights"] {
-  border-color: rgba(133, 115, 236, .72) !important;
+html[data-workspace-theme="biolume"] {
+  --theme-accent: 91, 255, 194;
+  --theme-secondary: 144, 106, 255;
+  --theme-highlight: 161, 255, 220;
+  --theme-glow: 56, 237, 177;
+  --theme-bg: 4, 20, 23;
+  --theme-heading: linear-gradient(100deg, #a2ffcf, #58f1d0 48%, #bf91ff);
+}
+html[data-workspace-theme="lunar"] {
+  --theme-accent: 203, 218, 255;
+  --theme-secondary: 122, 169, 214;
+  --theme-highlight: 231, 240, 255;
+  --theme-glow: 151, 189, 255;
+  --theme-bg: 10, 17, 31;
+  --theme-heading: linear-gradient(100deg, #f7fbff, #b6d2ff 50%, #a4f0ef);
 }
 
-html[data-workspace-theme="ember"] body {
+html[data-workspace-theme] body {
+  background-color: rgb(var(--theme-bg));
   background-image:
-    radial-gradient(ellipse at 12% 10%, rgba(224, 112, 47, .16), transparent 38%),
-    radial-gradient(ellipse at 88% 18%, rgba(172, 65, 89, .14), transparent 36%),
-    radial-gradient(ellipse at 50% 100%, rgba(163, 91, 33, .13), transparent 45%);
+    radial-gradient(ellipse at 8% 12%, rgba(var(--theme-accent), .16), transparent 38%),
+    radial-gradient(ellipse at 92% 18%, rgba(var(--theme-secondary), .14), transparent 36%),
+    radial-gradient(ellipse at 50% 100%, rgba(var(--theme-glow), .09), transparent 45%);
 }
-html[data-workspace-theme="ember"] .vibrant-frame,
-html[data-workspace-theme="ember"] #scanner-section [data-testid="view-digit-scanner"] > section {
-  border-color: rgba(244, 166, 76, .78) !important;
-  box-shadow: inset 0 0 36px rgba(188, 95, 41, .09), 0 0 28px rgba(225, 126, 50, .14);
-}
-html[data-workspace-theme="ember"] .gradient-heading {
-  background-image: linear-gradient(100deg, #ffd36e 0%, #ff9a59 52%, #ff7385 100%);
-}
-html[data-workspace-theme="ember"] .preview-badge {
-  border-color: rgba(243, 163, 79, .7) !important;
-  background: linear-gradient(110deg, rgba(83, 43, 26, .86), rgba(72, 35, 54, .58)) !important;
-}
-html[data-workspace-theme="ember"] .market-picker,
-html[data-workspace-theme="ember"] [data-testid="digit-key-insights"] {
-  border-color: rgba(216, 129, 63, .72) !important;
-}
-
-html[data-workspace-theme="cyberpunk"] body {
-  background-color: #080713;
-  background-image:
-    radial-gradient(ellipse at 9% 12%, rgba(234, 49, 184, .2), transparent 38%),
-    radial-gradient(ellipse at 90% 16%, rgba(48, 101, 255, .2), transparent 36%),
-    radial-gradient(ellipse at 48% 100%, rgba(34, 214, 231, .1), transparent 44%);
-}
-html[data-workspace-theme="cyberpunk"] .dashboard-backdrop {
+html[data-workspace-theme] .dashboard-backdrop {
   background:
-    radial-gradient(ellipse at 8% 22%, rgba(238, 50, 183, .08), transparent 42%),
-    radial-gradient(ellipse at 95% 58%, rgba(60, 101, 255, .08), transparent 38%);
+    radial-gradient(ellipse at 8% 22%, rgba(var(--theme-accent), .075), transparent 42%),
+    radial-gradient(ellipse at 95% 58%, rgba(var(--theme-secondary), .065), transparent 38%);
 }
-html[data-workspace-theme="cyberpunk"] .vibrant-frame,
-html[data-workspace-theme="cyberpunk"] #scanner-section [data-testid="view-digit-scanner"] > section {
-  border-color: rgba(239, 74, 205, .82) !important;
-  box-shadow: inset 0 0 38px rgba(104, 49, 166, .13), 0 0 26px rgba(238, 50, 183, .17), 0 0 52px rgba(42, 105, 255, .08);
+html[data-workspace-theme] .dashboard-backdrop h1 svg,
+html[data-workspace-theme] .dashboard-backdrop h2 svg,
+html[data-workspace-theme] .dashboard-backdrop h3 svg,
+html[data-workspace-theme] .dashboard-backdrop [data-testid="text-selected-market"] {
+  color: rgb(var(--theme-highlight));
 }
-html[data-workspace-theme="cyberpunk"] .gradient-heading {
-  background-image: linear-gradient(100deg, #ff65ca 0%, #a88aff 48%, #4fdcff 100%);
+html[data-workspace-theme] .topbar,
+html[data-workspace-theme] .section-nav {
+  border-image: linear-gradient(90deg, rgba(var(--theme-accent), .7), rgba(var(--theme-secondary), .48), rgba(var(--theme-highlight), .52)) 1;
 }
-html[data-workspace-theme="cyberpunk"] .preview-badge {
-  border-color: rgba(239, 74, 205, .72) !important;
-  background: linear-gradient(110deg, rgba(76, 24, 75, .88), rgba(24, 37, 91, .7)) !important;
-  box-shadow: 0 0 20px rgba(238, 50, 183, .14);
+html[data-workspace-theme] .vibrant-frame,
+html[data-workspace-theme] .analysis-card,
+html[data-workspace-theme] .metric-card,
+html[data-workspace-theme] #scanner-section [data-testid="view-digit-scanner"] > section,
+html[data-workspace-theme] [data-testid="scanner-dashboard"],
+html[data-workspace-theme] [data-testid="scanner-dashboard"] > section,
+html[data-workspace-theme] [data-testid="scanner-warmup"],
+html[data-workspace-theme] [data-testid="prediction-outcome-history"] > div,
+html[data-workspace-theme] [data-testid="digit-key-insights"],
+html[data-workspace-theme] [data-testid="prediction-outcome-history"],
+html[data-workspace-theme] [data-testid="market-contract-performance"] {
+  border-color: rgba(var(--theme-accent), .66) !important;
+  box-shadow:
+    inset 0 0 34px rgba(var(--theme-glow), .075),
+    0 0 25px rgba(var(--theme-glow), .11),
+    0 12px 38px rgba(0, 0, 0, .24);
 }
-html[data-workspace-theme="cyberpunk"] .brand-mark {
-  color: #ff91df !important;
-  border-color: rgba(239, 74, 205, .7) !important;
-  background: linear-gradient(145deg, rgba(82, 29, 86, .9), rgba(26, 34, 79, .96)) !important;
-  box-shadow: 0 0 22px rgba(238, 50, 183, .2), inset 0 0 14px rgba(90, 130, 255, .18) !important;
+html[data-workspace-theme] .metric-card,
+html[data-workspace-theme] [data-testid="scanner-dashboard"],
+html[data-workspace-theme] [data-testid="scanner-dashboard"] > section,
+html[data-workspace-theme] [data-testid="scanner-warmup"],
+html[data-workspace-theme] [data-testid="market-contract-performance"] > li,
+html[data-workspace-theme] [data-testid="prediction-outcome-history"] > div {
+  background-color: rgba(var(--theme-accent), .055) !important;
 }
-html[data-workspace-theme="cyberpunk"] .market-picker,
-html[data-workspace-theme="cyberpunk"] [data-testid="digit-key-insights"] {
-  border-color: rgba(216, 77, 201, .75) !important;
-  box-shadow: inset 0 0 24px rgba(160, 49, 190, .09);
+html[data-workspace-theme] .gradient-heading {
+  background-image: var(--theme-heading);
 }
-html[data-workspace-theme="cyberpunk"] .button-cycle {
-  border-color: rgba(119, 111, 255, .78) !important;
-  background: linear-gradient(110deg, rgba(47, 34, 99, .98), rgba(27, 44, 104, .96)) !important;
+html[data-workspace-theme] .preview-badge,
+html[data-workspace-theme] .brand-mark,
+html[data-workspace-theme] .market-picker {
+  border-color: rgba(var(--theme-accent), .68) !important;
+  box-shadow: inset 0 0 24px rgba(var(--theme-glow), .08), 0 0 18px rgba(var(--theme-glow), .07);
 }
-html[data-workspace-theme="cyberpunk"] .button-entry {
-  border-color: rgba(55, 206, 220, .72) !important;
-  background: linear-gradient(110deg, rgba(12, 72, 88, .98), rgba(25, 45, 93, .95)) !important;
+html[data-workspace-theme] .preview-badge,
+html[data-workspace-theme] .brand-mark {
+  background: linear-gradient(120deg, rgba(var(--theme-accent), .17), rgba(var(--theme-secondary), .15)) !important;
 }
-html[data-workspace-theme="cyberpunk"] .nav-current {
-  border-color: rgba(239, 74, 205, .7) !important;
-  background: linear-gradient(110deg, rgba(75, 26, 74, .82), rgba(28, 42, 87, .72)) !important;
-  color: #ff9add !important;
+html[data-workspace-theme] .brand-mark,
+html[data-workspace-theme] .brand-mark svg,
+html[data-workspace-theme] .market-picker > svg {
+  color: rgb(var(--theme-highlight)) !important;
 }
-
-html[data-workspace-theme="obsidian"] body {
-  background-color: #090c10;
-  background-image:
-    radial-gradient(ellipse at 12% 8%, rgba(145, 165, 187, .13), transparent 38%),
-    radial-gradient(ellipse at 88% 20%, rgba(91, 112, 137, .12), transparent 36%),
-    radial-gradient(ellipse at 50% 100%, rgba(66, 79, 98, .13), transparent 44%);
+html[data-workspace-theme] .market-picker {
+  background: linear-gradient(110deg, rgba(var(--theme-accent), .13), rgba(var(--theme-secondary), .13)) !important;
 }
-html[data-workspace-theme="obsidian"] .dashboard-backdrop {
+html[data-workspace-theme] .dashboard-backdrop button:not(.scanner-countdown-tile),
+html[data-workspace-theme] .dashboard-backdrop a[role="tab"],
+html[data-workspace-theme] #scanner-section select,
+html[data-workspace-theme] #scanner-section button:not(.scanner-countdown-tile) {
+  border-color: rgba(var(--theme-accent), .38);
+}
+html[data-workspace-theme] .dashboard-backdrop button:not(.scanner-countdown-tile):hover,
+html[data-workspace-theme] .dashboard-backdrop a[role="tab"]:hover,
+html[data-workspace-theme] #scanner-section select:focus,
+html[data-workspace-theme] #scanner-section button:not(.scanner-countdown-tile):hover {
+  border-color: rgba(var(--theme-highlight), .78) !important;
+  box-shadow: 0 0 18px rgba(var(--theme-glow), .14);
+}
+html[data-workspace-theme] .nav-current,
+html[data-workspace-theme] .button-auto[aria-pressed="true"],
+html[data-workspace-theme] .button-cycle,
+html[data-workspace-theme] .button-entry,
+html[data-workspace-theme] .button-refresh {
+  border-color: rgba(var(--theme-accent), .7) !important;
+  background: linear-gradient(110deg, rgba(var(--theme-accent), .16), rgba(var(--theme-secondary), .16)) !important;
+  color: rgb(var(--theme-highlight)) !important;
+}
+html[data-workspace-theme] .nav-current,
+html[data-workspace-theme] .gradient-heading {
+  text-shadow: 0 0 18px rgba(var(--theme-glow), .28);
+}
+html[data-workspace-theme] [role="dialog"] {
+  border-color: rgba(var(--theme-accent), .5) !important;
   background:
-    radial-gradient(ellipse at 8% 22%, rgba(174, 192, 212, .045), transparent 42%),
-    radial-gradient(ellipse at 95% 58%, rgba(108, 126, 151, .05), transparent 38%);
+    radial-gradient(ellipse at 0% 0%, rgba(var(--theme-accent), .12), transparent 58%),
+    rgb(var(--theme-bg)) !important;
+  box-shadow: 0 0 44px rgba(var(--theme-glow), .12);
 }
-html[data-workspace-theme="obsidian"] .vibrant-frame,
-html[data-workspace-theme="obsidian"] #scanner-section [data-testid="view-digit-scanner"] > section {
-  border-color: rgba(166, 183, 202, .72) !important;
-  box-shadow: inset 0 0 38px rgba(123, 145, 171, .08), 0 0 24px rgba(122, 145, 173, .1), 0 12px 38px rgba(0, 0, 0, .34);
+html[data-workspace-theme] [role="dialog"] [data-testid="button-save-settings"] {
+  border-color: rgba(var(--theme-accent), .72) !important;
+  background: linear-gradient(110deg, rgba(var(--theme-accent), .3), rgba(var(--theme-secondary), .28)) !important;
+  color: rgb(var(--theme-highlight)) !important;
 }
-html[data-workspace-theme="obsidian"] .gradient-heading {
-  background-image: linear-gradient(100deg, #f1f5f9 0%, #aab9ca 48%, #8bd6e5 100%);
+html[data-workspace-theme] [role="dialog"] svg {
+  color: rgb(var(--theme-highlight));
 }
-html[data-workspace-theme="obsidian"] .preview-badge {
-  border-color: rgba(159, 180, 203, .62) !important;
-  background: linear-gradient(110deg, rgba(43, 53, 65, .88), rgba(28, 39, 53, .74)) !important;
-  box-shadow: 0 0 20px rgba(151, 174, 198, .08);
+html[data-workspace-theme] #market-analysis > section > .ambient-orb-a {
+  background-color: rgba(var(--theme-accent), .12) !important;
 }
-html[data-workspace-theme="obsidian"] .brand-mark {
-  color: #e0e8f0 !important;
-  border-color: rgba(166, 183, 202, .6) !important;
-  background: linear-gradient(145deg, rgba(53, 65, 78, .92), rgba(22, 29, 38, .98)) !important;
-  box-shadow: 0 0 22px rgba(151, 174, 198, .12), inset 0 0 14px rgba(190, 208, 226, .1) !important;
+html[data-workspace-theme] #market-analysis > section > .ambient-orb-b {
+  background-color: rgba(var(--theme-secondary), .13) !important;
 }
-html[data-workspace-theme="obsidian"] .market-picker,
-html[data-workspace-theme="obsidian"] [data-testid="digit-key-insights"] {
-  border-color: rgba(145, 166, 189, .62) !important;
-  box-shadow: inset 0 0 24px rgba(151, 174, 198, .055);
+html[data-workspace-theme] [data-testid="select-workspace-theme"]:focus,
+html[data-workspace-theme] input:focus,
+html[data-workspace-theme] select:focus-visible,
+html[data-workspace-theme] button:focus-visible {
+  --tw-ring-color: rgba(var(--theme-accent), .55);
 }
-html[data-workspace-theme="obsidian"] .button-cycle {
-  border-color: rgba(142, 166, 193, .65) !important;
-  background: linear-gradient(110deg, rgba(37, 52, 68, .98), rgba(36, 45, 66, .96)) !important;
-}
-html[data-workspace-theme="obsidian"] .button-entry {
-  border-color: rgba(94, 175, 186, .62) !important;
-  background: linear-gradient(110deg, rgba(25, 59, 67, .98), rgba(30, 48, 64, .95)) !important;
-}
-html[data-workspace-theme="obsidian"] .nav-current {
-  border-color: rgba(145, 166, 189, .62) !important;
-  background: linear-gradient(110deg, rgba(45, 56, 70, .8), rgba(31, 42, 56, .74)) !important;
-  color: #d7e4f0 !important;
+html[data-workspace-theme] :focus-visible {
+  outline-color: rgba(var(--theme-accent), .9);
 }

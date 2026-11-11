@@ -54,6 +54,10 @@ import {
   parseTimestampedTickHistory,
 } from '@/lib/market-data';
 import {
+  parseAppPreferences,
+  type AppPreferences,
+} from '@/lib/app-preferences';
+import {
   Route,
   Switch,
   useLocation,
@@ -103,7 +107,7 @@ function playTone(context: AudioContext, alert: ScannerSoundAlert) {
   }
 }
 
-type WorkspaceTheme = 'ocean' | 'aurora' | 'ember' | 'cyberpunk' | 'obsidian';
+type WorkspaceTheme = 'arctic' | 'nebula' | 'solar' | 'biolume' | 'lunar';
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
@@ -114,10 +118,11 @@ interface WorkspaceSettings {
 }
 
 const SETTINGS_STORAGE_KEY = 'deriv-analysis-workspace-settings';
+const APP_PREFERENCES_STORAGE_KEY = 'deriv-analysis-app-preferences-v1';
 const PREDICTION_PERFORMANCE_STORAGE_KEY = 'deriv-analysis-prediction-performance-v1';
 const PREDICTION_HISTORY_LIMIT = 500;
 const DEFAULT_WORKSPACE_SETTINGS: WorkspaceSettings = {
-  theme: 'ocean',
+  theme: 'arctic',
 };
 
 function readWorkspaceSettings(): WorkspaceSettings {
@@ -133,13 +138,24 @@ function readWorkspaceSettings(): WorkspaceSettings {
     }
 
     const candidate = parsed as { theme?: unknown };
+    const migratedTheme: Record<string, WorkspaceTheme> = {
+      ocean: 'arctic',
+      aurora: 'nebula',
+      ember: 'solar',
+      cyberpunk: 'biolume',
+      obsidian: 'lunar',
+    };
+    const savedTheme = candidate.theme;
     return {
-      theme: candidate.theme === 'aurora'
-        || candidate.theme === 'ember'
-        || candidate.theme === 'cyberpunk'
-        || candidate.theme === 'obsidian'
-        ? candidate.theme
-        : 'ocean',
+      theme: savedTheme === 'arctic'
+        || savedTheme === 'nebula'
+        || savedTheme === 'solar'
+        || savedTheme === 'biolume'
+        || savedTheme === 'lunar'
+        ? savedTheme
+        : typeof savedTheme === 'string' && migratedTheme[savedTheme]
+          ? migratedTheme[savedTheme]
+          : DEFAULT_WORKSPACE_SETTINGS.theme,
     };
   } catch (error) {
     console.warn('Unable to load saved workspace settings.', error);
@@ -155,6 +171,27 @@ const DEFAULT_MARKETS = [
   { symbol: '1HZ50V', label: 'Volatility 50 (1s) Index' },
   { symbol: 'BOOM500', label: 'Boom 500 Index' },
 ];
+
+const DEFAULT_APP_PREFERENCES: AppPreferences = {
+  marketSymbol: DEFAULT_MARKETS[0].symbol,
+  autoScan: true,
+  soundAlertsEnabled: false,
+};
+
+function readAppPreferences(): AppPreferences {
+  try {
+    const stored = localStorage.getItem(APP_PREFERENCES_STORAGE_KEY);
+    if (!stored) return DEFAULT_APP_PREFERENCES;
+
+    return parseAppPreferences(
+      JSON.parse(stored) as unknown,
+      DEFAULT_MARKETS.map(({ symbol }) => symbol),
+    ) ?? DEFAULT_APP_PREFERENCES;
+  } catch (error) {
+    console.warn('Unable to load saved app preferences.', error);
+    return DEFAULT_APP_PREFERENCES;
+  }
+}
 
 type MarketOption = {
   symbol: string;
@@ -201,13 +238,12 @@ const EMPTY_LIVE_MARKET_DATA: LiveMarketData = {
 function Home() {
   const { lockApp } = useAppLock();
   const [markets, setMarkets] = useState<MarketOption[]>(DEFAULT_MARKETS);
-  const [marketSymbol, setMarketSymbol] = useState<string>(DEFAULT_MARKETS[0].symbol);
-  const [autoScan, setAutoScan] = useState(true);
+  const [appPreferences, setAppPreferences] = useState<AppPreferences>(readAppPreferences);
+  const { marketSymbol, autoScan, soundAlertsEnabled } = appPreferences;
   const [notice, setNotice] = useState('');
   const [installPromptEvent, setInstallPromptEvent] = useState<BeforeInstallPromptEvent | null>(null);
   const [isAppInstalled, setIsAppInstalled] = useState(false);
   const [settings, setSettings] = useState<WorkspaceSettings>(readWorkspaceSettings);
-  const [soundAlertsEnabled, setSoundAlertsEnabled] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState<WorkspaceSettings>(settings);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [logExpanded, setLogExpanded] = useState(false);
@@ -238,9 +274,43 @@ function Home() {
     { id: 2, time: 'READY', title: 'Connecting to live market feed', detail: 'Waiting for public Deriv tick data.', tone: 'blue' },
   ]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(APP_PREFERENCES_STORAGE_KEY, JSON.stringify(appPreferences));
+    } catch (error) {
+      console.error('Unable to save app preferences.', error);
+      setNotice('App preferences could not be saved in this browser.');
+    }
+  }, [appPreferences]);
+
+  useEffect(() => {
+    if (!soundAlertsEnabled || typeof window.AudioContext === 'undefined') return;
+
+    const resumeAudioOnInteraction = () => {
+      try {
+        const context = audioContextRef.current ?? new window.AudioContext();
+        audioContextRef.current = context;
+        if (context.state === 'suspended') {
+          void context.resume().catch((error: unknown) => {
+            console.error('Unable to resume saved scanner audio alerts.', error);
+          });
+        }
+      } catch (error) {
+        console.error('Unable to initialize saved scanner audio alerts.', error);
+      }
+    };
+
+    window.addEventListener('pointerdown', resumeAudioOnInteraction);
+    window.addEventListener('keydown', resumeAudioOnInteraction);
+    return () => {
+      window.removeEventListener('pointerdown', resumeAudioOnInteraction);
+      window.removeEventListener('keydown', resumeAudioOnInteraction);
+    };
+  }, [soundAlertsEnabled]);
+
   const toggleSoundAlerts = async () => {
     if (soundAlertsEnabled) {
-      setSoundAlertsEnabled(false);
+      setAppPreferences((previous) => ({ ...previous, soundAlertsEnabled: false }));
       setNotice('Sound alerts disabled.');
       return;
     }
@@ -257,7 +327,7 @@ function Home() {
         throw new Error('Audio playback did not start.');
       }
       audioContextRef.current = context;
-      setSoundAlertsEnabled(true);
+      setAppPreferences((previous) => ({ ...previous, soundAlertsEnabled: true }));
       setNotice('Sound alerts enabled for signals and expired prediction timers.');
     } catch (error) {
       console.error('Unable to enable sound alerts.', error);
@@ -331,8 +401,10 @@ function Home() {
   }, [performanceHistoryLoaded, predictionOutcomes]);
 
   useEffect(() => {
-    document.documentElement.dataset.workspaceTheme = settings.theme;
-  }, [settings.theme]);
+    document.documentElement.dataset.workspaceTheme = settingsOpen
+      ? settingsDraft.theme
+      : settings.theme;
+  }, [settings.theme, settingsDraft.theme, settingsOpen]);
 
   useEffect(() => {
     if ('serviceWorker' in navigator) {
@@ -475,7 +547,7 @@ function Home() {
     }
 
     setLiveMarketData(EMPTY_LIVE_MARKET_DATA);
-    setMarketSymbol(selectedMarket.symbol);
+    setAppPreferences((previous) => ({ ...previous, marketSymbol: selectedMarket.symbol }));
     recordActivity('Live market changed', `Subscribing to ${selectedMarket.label}.`, 'cyan');
   };
 
@@ -1233,18 +1305,18 @@ function Home() {
                   value={settingsDraft.theme}
                   onChange={(event) => {
                     const theme = event.target.value;
-                    if (theme === 'ocean' || theme === 'aurora' || theme === 'ember' || theme === 'cyberpunk' || theme === 'obsidian') {
+                    if (theme === 'arctic' || theme === 'nebula' || theme === 'solar' || theme === 'biolume' || theme === 'lunar') {
                       setSettingsDraft((current) => ({ ...current, theme }));
                     }
                   }}
                   data-testid="select-workspace-theme"
                   className="w-full rounded-lg border border-[#285264] bg-[#0b202c] px-3 py-2.5 text-sm text-[#e1f3f5] outline-none focus:border-[#3dd5e3]"
                 >
-                  <option value="ocean">Ocean · Cyan and teal</option>
-                  <option value="aurora">Aurora · Violet and blue</option>
-                  <option value="ember">Ember · Gold and coral</option>
-                  <option value="cyberpunk">Cyberpunk · Neon magenta and electric blue</option>
-                  <option value="obsidian">Obsidian · Graphite and platinum</option>
+                  <option value="arctic">Arctic Glass · Ice blue and silver</option>
+                  <option value="nebula">Nebula Drift · Cosmic violet and starlight</option>
+                  <option value="solar">Solar Flare · Molten gold and crimson</option>
+                  <option value="biolume">Biolume · Electric jade and ultraviolet</option>
+                  <option value="lunar">Lunar Chrome · Moonstone and aurora</option>
                 </select>
               </label>
 
@@ -1290,7 +1362,7 @@ function Home() {
                 <ChevronDown size={14} className="shrink-0 text-[#6aa4a4]" />
               </label>
               <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => { const next = !autoScan; setAutoScan(next); recordActivity(`Auto-scan ${next ? 'enabled' : 'paused'}`, 'Local interface toggle only; no automatic analysis is running.', next ? 'green' : 'gold'); }} aria-pressed={autoScan} data-testid="toggle-auto-scan" className={`button-auto col-span-2 flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[10px] font-extrabold tracking-[.04em] transition ${autoScan ? 'border-[#28777a] bg-[#10383a] text-[#64dfd8]' : 'border-[#394654] bg-[#19222b] text-[#aab6c0]'}`}>
+                <button type="button" onClick={() => { const next = !autoScan; setAppPreferences((previous) => ({ ...previous, autoScan: next })); recordActivity(`Auto-scan ${next ? 'enabled' : 'paused'}`, 'Local interface toggle only; no automatic analysis is running.', next ? 'green' : 'gold'); }} aria-pressed={autoScan} data-testid="toggle-auto-scan" className={`button-auto col-span-2 flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[10px] font-extrabold tracking-[.04em] transition ${autoScan ? 'border-[#28777a] bg-[#10383a] text-[#64dfd8]' : 'border-[#394654] bg-[#19222b] text-[#aab6c0]'}`}>
                   <span className={`relative h-[14px] w-[25px] rounded-full transition ${autoScan ? 'bg-[#19aaa9]' : 'bg-[#43505b]'}`}><span className={`absolute top-[2px] h-[10px] w-[10px] rounded-full bg-[#e5f7f3] transition-transform ${autoScan ? 'translate-x-[13px]' : 'translate-x-[2px]'}`} /></span>
                   AUTO-SCAN <span className="font-mono-ui text-[9px]">{autoScan ? 'ON' : 'OFF'}</span>
                 </button>
