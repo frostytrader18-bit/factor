@@ -5,7 +5,7 @@ import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 const COOKIE_NAME = "app_access";
-const SESSION_TTL_SECONDS = 30 * 60;
+const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MAX_ATTEMPTS = 5;
 const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const attemptsByClient = new Map<string, { count: number; resetAt: number }>();

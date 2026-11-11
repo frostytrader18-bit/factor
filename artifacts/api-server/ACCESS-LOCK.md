@@ -7,7 +7,7 @@ Configure these server-only environment variables:
 - `APP_ACCESS_KEY_HASHES`: exactly seven `salt:hash` entries separated by semicolons. Each salt is base64url-encoded random data of at least 16 bytes; each hash is a 64-byte scrypt result, also base64url-encoded.
 - `APP_ACCESS_SESSION_SECRET`: a randomly generated secret with at least 32 bytes.
 
-Do not put plaintext access keys or the session secret in source control, frontend variables, or browser storage. Set them in the hosting provider's server-side environment settings. The server fails closed if either value is missing or malformed. Sessions expire after 30 minutes; access attempts are limited to five per client IP per 15 minutes per server process.
+Do not put plaintext access keys or the session secret in source control, frontend variables, or browser storage. Set them in the hosting provider's server-side environment settings. The server fails closed if either value is missing or malformed. Successful logins use a persistent 30-day cookie session, so closing and reopening the app does not log the user out. Sessions expire after 30 days or when explicitly locked; users may also be logged out if browser cookies are cleared. Access attempts are limited to five per client IP per 15 minutes per server process.
 
 ## Local development
 

@@ -69,7 +69,9 @@ test("access keys protect the app, assets, and unlock session", async () => {
       body: JSON.stringify({ password }),
     });
     assert.equal(unlock.status, 200);
-    const cookie = unlock.headers.get("set-cookie")?.split(";")[0];
+    const setCookie = unlock.headers.get("set-cookie") ?? "";
+    assert.match(setCookie, /Max-Age=2592000/i);
+    const cookie = setCookie.split(";")[0];
     assert.ok(cookie);
 
     const session = await fetch(`${baseUrl}/api/access/session`, { headers: { cookie } });
