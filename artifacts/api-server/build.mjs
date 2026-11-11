@@ -1,18 +1,27 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { execSync } from "node:child_process";
+import { cp, rm } from "node:fs/promises";
 import { build as esbuild } from "esbuild";
 import esbuildPluginPino from "esbuild-plugin-pino";
-import { rm } from "node:fs/promises";
 
 // Plugins (e.g. 'esbuild-plugin-pino') may use `require` to resolve dependencies
 globalThis.require = createRequire(import.meta.url);
 
 const artifactDir = path.dirname(fileURLToPath(import.meta.url));
+const workspaceRoot = path.resolve(artifactDir, "..", "..");
 
 async function buildAll() {
   const distDir = path.resolve(artifactDir, "dist");
   await rm(distDir, { recursive: true, force: true });
+  const packageManagerCommand = process.platform === "win32"
+    ? "corepack pnpm --filter @workspace/deriv-analysis build"
+    : "pnpm --filter @workspace/deriv-analysis build";
+  execSync(packageManagerCommand, {
+    cwd: workspaceRoot,
+    stdio: "inherit",
+  });
 
   await esbuild({
     entryPoints: [
@@ -121,6 +130,11 @@ globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
     `,
     },
   });
+  await cp(
+    path.resolve(workspaceRoot, "artifacts/deriv-analysis/dist/public"),
+    path.resolve(distDir, "public"),
+    { recursive: true },
+  );
 }
 
 buildAll().catch((err) => {

@@ -22,6 +22,7 @@ import {
   Cpu,
   Download,
   Gauge,
+  KeyRound,
   Radio,
   RefreshCw,
   Settings2,
@@ -31,6 +32,7 @@ import {
   X,
 } from 'lucide-react';
 import { ActivityLogView, type ActivityRecord } from './components/analysis/ActivityLogView';
+import { useAppLock } from './components/access-lock';
 import {
   MarketScannerDashboard,
 } from './components/analysis/MarketScannerDashboard';
@@ -197,6 +199,7 @@ const EMPTY_LIVE_MARKET_DATA: LiveMarketData = {
 };
 
 function Home() {
+  const { lockApp } = useAppLock();
   const [markets, setMarkets] = useState<MarketOption[]>(DEFAULT_MARKETS);
   const [marketSymbol, setMarketSymbol] = useState<string>(DEFAULT_MARKETS[0].symbol);
   const [autoScan, setAutoScan] = useState(true);
@@ -333,9 +336,26 @@ function Home() {
 
   useEffect(() => {
     if ('serviceWorker' in navigator) {
-      void navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`)
+      void navigator.serviceWorker.getRegistrations()
+        .then(async (registrations) => {
+          const removed = await Promise.all(registrations.map((registration) => registration.unregister()));
+          if (removed.some((success) => !success)) {
+            throw new Error('An existing offline app worker could not be removed.');
+          }
+        })
         .catch((error: unknown) => {
-          console.error('Unable to register the ONE-MARKET offline app shell.', error);
+          console.error('Unable to remove the ONE-MARKET offline app worker.', error);
+        });
+    }
+    if ('caches' in window) {
+      void caches.keys()
+        .then((cacheNames) => Promise.all(
+          cacheNames
+            .filter((name) => name.startsWith('one-market-shell-') || name.startsWith('d-pulse-shell-'))
+            .map((name) => caches.delete(name)),
+        ))
+        .catch((error: unknown) => {
+          console.error('Unable to remove the cached ONE-MARKET app shell.', error);
         });
     }
 
@@ -997,15 +1017,12 @@ function Home() {
             if (Date.now() >= predictionOutcome.expiresAt) {
               finishPredictionOutcome(predictionOutcome.id, 'complete');
             } else {
-              const { outcome: updatedOutcome, settled } = applyPredictionTick(
+              const { outcome: updatedOutcome } = applyPredictionTick(
                 predictionOutcome,
                 tick.lastDigit,
               );
               activePredictionOutcomesRef.current.set(updatedOutcome.id, updatedOutcome);
               publishPredictionOutcome(updatedOutcome);
-              if (settled) {
-                finishPredictionOutcome(updatedOutcome.id, 'complete');
-              }
             }
           }
 
@@ -1183,6 +1200,9 @@ function Home() {
             </button>
             <button type="button" onClick={() => { setSettingsDraft(settings); setSettingsOpen(true); }} aria-label="Settings" data-testid="button-settings" className="grid h-9 w-9 place-items-center rounded-lg border border-[#263441] bg-[#101a22] text-[#a5b2bc] transition hover:border-[#447985] hover:text-[#54d8d6]">
               <Settings2 size={16} />
+            </button>
+            <button type="button" onClick={() => { void lockApp().catch((error: unknown) => setNotice(error instanceof Error ? error.message : 'The app could not be locked. Try again.')); }} aria-label="Lock app" title="Lock app" data-testid="button-lock-app" className="grid h-9 w-9 place-items-center rounded-lg border border-[#263441] bg-[#101a22] text-[#a5b2bc] transition hover:border-[#447985] hover:text-[#54d8d6]">
+              <KeyRound size={15} />
             </button>
           </div>
         </header>
@@ -1370,8 +1390,15 @@ function Home() {
                 <section data-testid="prediction-outcome-history" aria-label="Scanned prediction outcome history" className="rounded-xl border border-[#19aeb7] bg-gradient-to-br from-[#0a3038] via-[#09232d] to-[#211b12] p-3 shadow-[0_0_24px_rgba(25,190,190,.16)] sm:p-4">
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-[#28727a]/70 pb-2.5">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="font-mono-ui text-[11px] font-extrabold tracking-[.12em] text-[#75f0e2] sm:text-xs">PREDICTION PERFORMANCE</h3>
-                      <span className="rounded-full border border-[#28727a] bg-[#07353b] px-2 py-1 font-mono-ui text-[7px] font-bold tracking-wide text-[#9bd9dc]">LATEST SIGNALS · INDEPENDENT RESULTS</span>
+                      <div>
+                        <h3 className="font-mono-ui text-[12px] font-extrabold tracking-[.08em] text-[#75f0e2] sm:text-sm">PREDICTION TRACKER</h3>
+                        <p className="mt-1 text-[9px] text-[#a6c4c5]">Each signal is tracked on its own.</p>
+                      </div>
+                      <span className="rounded-full border border-[#28727a] bg-[#07353b] px-2.5 py-1 font-mono-ui text-[8px] font-bold tracking-wide text-[#9bd9dc]">
+                        {predictionOutcomes.filter((outcome) => outcome.status === 'tracking').length} LIVE
+                        <span className="mx-1.5 text-[#507980]">·</span>
+                        {predictionOutcomes.length} TOTAL
+                      </span>
                     </div>
                     <div className="flex items-center gap-2">
                       <button
@@ -1386,7 +1413,7 @@ function Home() {
                     </div>
                   </div>
                   {recentPredictionOutcomes.length > 0 ? (
-                    <ol data-testid="market-contract-performance" className="space-y-2 font-mono-ui text-[8px]">
+                    <ol data-testid="market-contract-performance" className="space-y-2.5">
                       {recentPredictionOutcomes.map((outcome, index) => {
                         const hitRate = outcome.observedTicks > 0
                           ? `${((outcome.wins / outcome.observedTicks) * 100).toFixed(1)}%`
@@ -1423,36 +1450,45 @@ function Home() {
                             key={outcome.id}
                             data-testid={`prediction-outcome-${outcome.id}`}
                             data-signal-order={index + 1}
-                            className={`min-w-0 rounded-lg border bg-gradient-to-r from-[#0b2932] to-[#102b2b] p-2.5 shadow-[inset_0_1px_0_rgba(115,240,226,.06)] ${index === 0 ? 'border-[#35c9ba]' : 'border-[#23777c]'}`}
+                            className={`min-w-0 overflow-hidden rounded-xl border bg-[#091d25] shadow-[inset_0_1px_0_rgba(115,240,226,.06)] ${index === 0 ? 'border-[#35c9ba]' : 'border-[#23777c]/70'}`}
                           >
-                            <div className="flex flex-wrap items-start justify-between gap-2">
-                              <div className="min-w-0">
-                                <h4 className="break-words font-semibold text-[9px] text-[#e8fffb]">
-                                  {outcome.signalLabel} <span className="text-[#77d6cf]">· {outcome.marketLabel}</span>
-                                </h4>
-                                <p className="mt-0.5 font-mono-ui text-[7px] text-[#a0c4c6]">
-                                  {outcome.marketSymbol} · {contractLabel}
-                                  {outcome.targetTickOffset > 0
-                                    ? ` · settle on tick ${outcome.targetTickOffset}`
-                                    : ''}
-                                  {' · '}
-                                  {new Date(outcome.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                                  {index === 0 ? ' · LATEST' : ''}
+                            <div className="flex flex-wrap items-center justify-between gap-3 p-3">
+                              <div className="flex min-w-0 items-center gap-3">
+                                <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl border font-display text-[18px] font-extrabold ${outcome.status === 'tracking' ? 'border-[#4b8c81] bg-[#103a34] text-[#79f0c4]' : 'border-[#34525a] bg-[#10232b] text-[#a0c4c6]'}`}>
+                                  {outcome.digit ?? (outcome.contractType === 'even-odd' ? outcome.signalLabel.slice(0, 1) : '•')}
+                                </span>
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <h4 className="break-words font-semibold text-[12px] text-[#f0fffc]">{outcome.signalLabel}</h4>
+                                    {index === 0 && <span className="rounded bg-[#103f3b] px-1.5 py-0.5 font-mono-ui text-[7px] font-bold tracking-wide text-[#8af0dc]">LATEST</span>}
+                                  </div>
+                                  <p className="mt-0.5 truncate text-[10px] text-[#b3ced0]">{outcome.marketLabel} · {contractLabel}</p>
+                                  <p className="mt-0.5 font-mono-ui text-[8px] text-[#73979c]">
+                                    {new Date(outcome.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                    {outcome.targetTickOffset > 0 ? ` · checks tick ${outcome.targetTickOffset}` : ''}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="min-w-[150px] text-left sm:text-right">
+                                <span
+                                  data-testid={`prediction-status-${outcome.id}`}
+                                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono-ui text-[9px] font-extrabold tracking-wide ${outcome.status === 'tracking' ? 'border-[#a98029] bg-[#392b0d] text-[#ffdb67]' : outcome.status === 'interrupted' ? 'border-[#a84a5f] bg-[#411e2a] text-[#ff9caf]' : 'border-[#34525a] bg-[#0b2028] text-[#a0c4c6]'}`}
+                                >
+                                  {outcome.status === 'tracking' && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#ffcf45]" />}
+                                  {outcome.status === 'tracking'
+                                    ? awaitingMatchSettlement
+                                      ? 'WAITING FOR RESULT'
+                                      : `TRACKING · ${secondsRemaining}s`
+                                    : outcome.status === 'complete'
+                                      ? '30s COMPLETE'
+                                      : statusLabel}
+                                </span>
+                                <p className="mt-1 text-[10px] font-semibold text-[#d9efed]">
+                                  {awaitingMatchSettlement
+                                    ? `Waiting for tick ${outcome.targetTickOffset} · ${outcome.pendingTicks}/${outcome.targetTickOffset} ticks`
+                                    : `${outcome.wins} wins · ${outcome.losses} losses`}
                                 </p>
                               </div>
-                              <span
-                                data-testid={`prediction-status-${outcome.id}`}
-                                className={`flex items-center gap-1.5 rounded-full border px-2 py-1 font-mono-ui text-[8px] font-extrabold tracking-wide ${outcome.status === 'tracking' ? 'border-[#a98029] bg-[#392b0d] text-[#ffdb67]' : 'border-[#34525a] bg-[#0b2028] text-[#a0c4c6]'}`}
-                              >
-                                {outcome.status === 'tracking' && (
-                                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#ffcf45]" />
-                                )}
-                                {outcome.status === 'tracking'
-                                  ? awaitingMatchSettlement
-                                    ? `WAITING · ${outcome.pendingTicks}/${outcome.targetTickOffset} TICKS`
-                                    : `LIVE · ${secondsRemaining}s`
-                                  : statusLabel}
-                              </span>
                             </div>
                             {outcome.status === 'tracking' && (
                               <div
@@ -1463,7 +1499,7 @@ function Home() {
                                 aria-valuemin={0}
                                 aria-valuemax={100}
                                 aria-valuenow={Math.round(trackingProgress)}
-                                className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#173039]"
+                                className="mx-3 mb-2 h-1.5 overflow-hidden rounded-full bg-[#173039]"
                               >
                                 <div
                                   data-testid={`prediction-progress-${outcome.id}`}
@@ -1472,35 +1508,31 @@ function Home() {
                                 />
                               </div>
                             )}
-                            <dl className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1.5 sm:grid-cols-5">
-                              <div className={outcome.status === 'tracking' ? 'rounded-md border border-[#28636a] bg-[#071c27]/90 px-2 py-1.5' : ''}>
-                                <dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">
-                                  {awaitingMatchSettlement
-                                    ? 'WAITING FOR MATCH SETTLEMENT'
-                                    : outcome.status === 'tracking' ? 'LIVE W / L' : 'W / L'}
-                                </dt>
-                                <dd
-                                  data-testid={`prediction-live-count-${outcome.id}`}
-                                  aria-live={outcome.status === 'tracking' ? 'polite' : undefined}
-                                  className={outcome.status === 'tracking' ? 'text-[12px] font-extrabold text-[#f3fffd]' : 'text-[#ecf6f7]'}
-                                >
-                                  {awaitingMatchSettlement
-                                    ? <span className="text-[10px]">Outcome recorded on tick {outcome.targetTickOffset}</span>
-                                    : <>
-                                      {outcome.wins} / {outcome.losses}
-                                      {outcome.status === 'tracking' && <span className="ml-1 text-[8px] font-medium text-[#a0c4c6]">({outcome.observedTicks} ticks)</span>}
-                                    </>}
-                                </dd>
-                              </div>
-                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">{outcome.status === 'tracking' ? 'LIVE ACCURACY' : 'TICK ACCURACY'}</dt><dd className="font-bold text-[#66f0c0]">{hitRate}</dd></div>
-                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">BACKTEST</dt><dd className="text-[#ecf6f7]">{outcome.backtestPredictions > 0 ? `${(outcome.backtestAccuracy * 100).toFixed(1)}% · ${outcome.backtestHits}/${outcome.backtestPredictions}` : 'N/A'}</dd></div>
-                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">BRIER</dt><dd className="text-[#d3c7ff]">{outcome.observedTicks > 0 ? (outcome.squaredProbabilityError / outcome.observedTicks).toFixed(3) : '--'}</dd></div>
-                              <div><dt className="text-[7px] font-bold tracking-wide text-[#82b2b5]">ACTUAL EV</dt><dd className="font-bold text-[#ffd46e]">{outcome.expectedValue === null ? 'N/A' : outcome.expectedValue.toFixed(2)}</dd></div>
-                            </dl>
-                            <p className="mt-1.5 font-mono-ui text-[7px] text-[#9aaec2]">
-                              Lower bound {(outcome.wilsonLowerBound * 100).toFixed(1)}% · baseline {(outcome.baselineRate * 100).toFixed(1)}%
-                              {outcome.observedTicks > 0 ? ` · ${outcome.losses} misses` : ''}
-                            </p>
+                            {outcome.status === 'tracking' && (
+                              <p
+                                data-testid={`prediction-live-count-${outcome.id}`}
+                                aria-live="polite"
+                                className="sr-only"
+                              >
+                                {awaitingMatchSettlement
+                                  ? `Waiting for result. ${outcome.pendingTicks} of ${outcome.targetTickOffset} ticks received.`
+                                  : `${outcome.wins} wins, ${outcome.losses} losses from ${outcome.observedTicks} ticks.`}
+                              </p>
+                            )}
+                            <details className="border-t border-[#23777c]/40">
+                              <summary className="cursor-pointer px-3 py-2 text-[9px] font-semibold text-[#79c9c5] transition hover:bg-[#102a30] hover:text-[#b4f7ed]">
+                                More details
+                              </summary>
+                              <dl className="grid grid-cols-2 gap-x-3 gap-y-2 px-3 pb-3 pt-1 text-[9px] sm:grid-cols-4">
+                                <div><dt className="text-[#82b2b5]">Live accuracy</dt><dd className="font-bold text-[#66f0c0]">{hitRate}</dd></div>
+                                <div><dt className="text-[#82b2b5]">Backtest</dt><dd className="text-[#ecf6f7]">{outcome.backtestPredictions > 0 ? `${(outcome.backtestAccuracy * 100).toFixed(1)}% (${outcome.backtestHits}/${outcome.backtestPredictions})` : 'Not enough data'}</dd></div>
+                                <div><dt className="text-[#82b2b5]">Brier score</dt><dd className="text-[#d3c7ff]">{outcome.observedTicks > 0 ? (outcome.squaredProbabilityError / outcome.observedTicks).toFixed(3) : 'Not available yet'}</dd></div>
+                                <div><dt className="text-[#82b2b5]">Expected value</dt><dd className="font-bold text-[#ffd46e]">{outcome.expectedValue === null ? 'Not available' : outcome.expectedValue.toFixed(2)}</dd></div>
+                                <div className="col-span-2 font-mono-ui text-[8px] text-[#9aaec2] sm:col-span-4">
+                                  Confidence range: {(outcome.wilsonLowerBound * 100).toFixed(1)}%–{(outcome.wilsonUpperBound * 100).toFixed(1)}% · Baseline: {(outcome.baselineRate * 100).toFixed(1)}%
+                                </div>
+                              </dl>
+                            </details>
                           </li>
                         );
                       })}
@@ -1508,7 +1540,7 @@ function Home() {
                   ) : (
                     <p className="rounded-lg border border-dashed border-[#28727a] bg-[#071c27]/80 px-3 py-4 text-center text-[9px] text-[#b3d3d5]">No prediction results yet.</p>
                   )}
-                  <p className="mt-2 font-mono-ui text-[7px] leading-relaxed text-[#a0c4c6]">Actual EV requires proposal and payout data. Saved in this browser.</p>
+                  <p className="mt-2 text-[8px] leading-relaxed text-[#829ea1]">Results are recorded from live ticks. They describe past outcomes, not a guarantee of future results.</p>
                 </section>
 
                 <section className="analysis-card card-gold rounded-xl border border-[#30404c] bg-[#101b24]/90 p-3 sm:p-4">

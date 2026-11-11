@@ -13,6 +13,7 @@ out-tsc
 .nuxt
 .output
 .vercel
+/artifacts/api-server/.env.local
 
 # dependencies
 node_modules

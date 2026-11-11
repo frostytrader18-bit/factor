@@ -198,16 +198,19 @@ function migratePerformanceRecord(value: unknown): PredictionOutcomeRecord | nul
 export function applyPredictionTick(
   outcome: PredictionOutcomeRecord,
   actualDigit: number,
-): { outcome: PredictionOutcomeRecord; settled: boolean } {
+): { outcome: PredictionOutcomeRecord; recorded: boolean } {
   if (!Number.isInteger(actualDigit) || actualDigit < 0 || actualDigit > 9) {
     throw new RangeError('The actual tick digit must be an integer from 0 to 9.');
   }
 
-  const pendingTicks = outcome.pendingTicks + 1;
+  const pendingTicks = Math.min(
+    outcome.targetTickOffset,
+    outcome.pendingTicks + 1,
+  );
   if (outcome.targetTickOffset > 0 && pendingTicks < outcome.targetTickOffset) {
     return {
       outcome: { ...outcome, pendingTicks },
-      settled: false,
+      recorded: false,
     };
   }
 
@@ -217,20 +220,18 @@ export function applyPredictionTick(
     outcome.digit,
     actualDigit,
   );
-  const updatedOutcome: PredictionOutcomeRecord = {
-    ...outcome,
-    pendingTicks,
-    wins: outcome.wins + Number(won),
-    losses: outcome.losses + Number(!won),
-    observedTicks: outcome.observedTicks + 1,
-    squaredProbabilityError: outcome.squaredProbabilityError
-      + (outcome.estimatedProbability - Number(won)) ** 2,
+  return {
+    outcome: {
+      ...outcome,
+      pendingTicks,
+      wins: outcome.wins + Number(won),
+      losses: outcome.losses + Number(!won),
+      observedTicks: outcome.observedTicks + 1,
+      squaredProbabilityError: outcome.squaredProbabilityError
+        + (outcome.estimatedProbability - Number(won)) ** 2,
+    },
+    recorded: true,
   };
-  if (outcome.targetTickOffset > 0) {
-    updatedOutcome.status = 'complete';
-    return { outcome: updatedOutcome, settled: true };
-  }
-  return { outcome: updatedOutcome, settled: false };
 }
 
 export function parsePerformanceHistory(value: unknown): PredictionOutcomeRecord[] {

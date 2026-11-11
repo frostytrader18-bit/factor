@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "export NODE_ENV=development && pnpm run build && pnpm run start",
+    "dev": "node ./build.mjs && node --env-file=.env.local --enable-source-maps ./dist/server.mjs",
+    "setup:access": "node ./scripts/setup-access.mjs",
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/server.mjs",
+    "test:access": "node --test test/access.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

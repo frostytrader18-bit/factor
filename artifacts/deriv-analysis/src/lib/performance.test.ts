@@ -76,7 +76,7 @@ test('performance is grouped per engine, market, and contract with accuracy and 
   assert.equal(r75?.brierScore, null);
 });
 
-test('three-tick MATCHES execution delay only settles against the third subsequent tick', () => {
+test('MATCHES tracks every tick after the three-tick execution delay', () => {
   let outcome = createOutcome({
     targetTickOffset: 3,
     wins: 0,
@@ -88,26 +88,65 @@ test('three-tick MATCHES execution delay only settles against the third subseque
     signalKey: '8',
     signalLabel: 'MATCH 8',
     digit: 8,
+    status: 'tracking',
   });
 
   const firstTick = applyPredictionTick(outcome, 1);
   outcome = firstTick.outcome;
-  assert.equal(firstTick.settled, false);
+  assert.equal(firstTick.recorded, false);
   assert.equal(outcome.pendingTicks, 1);
   assert.equal(outcome.observedTicks, 0);
 
   const secondTick = applyPredictionTick(outcome, 8);
   outcome = secondTick.outcome;
-  assert.equal(secondTick.settled, false);
+  assert.equal(secondTick.recorded, false);
   assert.equal(outcome.pendingTicks, 2);
   assert.equal(outcome.observedTicks, 0);
 
   const thirdTick = applyPredictionTick(outcome, 8);
-  assert.equal(thirdTick.settled, true);
-  assert.equal(thirdTick.outcome.wins, 1);
-  assert.equal(thirdTick.outcome.losses, 0);
-  assert.equal(thirdTick.outcome.observedTicks, 1);
-  assert.equal(thirdTick.outcome.status, 'complete');
+  outcome = thirdTick.outcome;
+  assert.equal(thirdTick.recorded, true);
+  assert.equal(outcome.wins, 1);
+  assert.equal(outcome.losses, 0);
+  assert.equal(outcome.observedTicks, 1);
+  assert.equal(outcome.status, 'tracking');
+
+  const fourthTick = applyPredictionTick(outcome, 4);
+  outcome = fourthTick.outcome;
+  assert.equal(fourthTick.recorded, true);
+  assert.equal(outcome.wins, 1);
+  assert.equal(outcome.losses, 1);
+  assert.equal(outcome.observedTicks, 2);
+  assert.equal(outcome.pendingTicks, 3);
+  assert.equal(outcome.status, 'tracking');
+
+  for (let tick = 0; tick < 26; tick += 1) {
+    outcome = applyPredictionTick(outcome, tick % 2 === 0 ? 8 : 4).outcome;
+  }
+  assert.equal(outcome.observedTicks, 28);
+  assert.equal(outcome.status, 'tracking');
+});
+
+test('predictions without an execution delay record every tick while tracking', () => {
+  const outcome = createOutcome({
+    targetTickOffset: 0,
+    wins: 0,
+    losses: 0,
+    observedTicks: 0,
+    pendingTicks: 0,
+    squaredProbabilityError: 0,
+    status: 'tracking',
+  });
+
+  const firstTick = applyPredictionTick(outcome, 4);
+  assert.equal(firstTick.recorded, true);
+  assert.equal(firstTick.outcome.observedTicks, 1);
+  assert.equal(firstTick.outcome.status, 'tracking');
+
+  const secondTick = applyPredictionTick(firstTick.outcome, 2);
+  assert.equal(secondTick.recorded, true);
+  assert.equal(secondTick.outcome.observedTicks, 2);
+  assert.equal(secondTick.outcome.status, 'tracking');
 });
 
 test('expected value is unavailable without an actual proposal payout', () => {

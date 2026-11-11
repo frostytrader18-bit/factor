@@ -1,0 +1,12 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Configure local access keys",
+			"type": "shell",
+			"command": "corepack pnpm --filter @workspace/api-server run setup:access",
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}
