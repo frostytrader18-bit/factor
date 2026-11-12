@@ -1438,16 +1438,7 @@ function Home() {
             )}
           </div>
           <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-            {derivConnected ? (
-              <button
-                type="button"
-                onClick={() => { setSettingsDraft(settings); setSettingsOpen(true); }}
-                data-testid="button-deriv-login"
-                className="flex h-9 items-center gap-1.5 rounded-lg border border-[#7651bc]/70 bg-[#261b3d]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#d5b9ff] transition hover:border-[#ad7cff] hover:bg-[#352255] sm:px-3"
-              >
-                <LogIn size={13} /> DERIV CONNECTED
-              </button>
-            ) : (
+            {!derivConnected && (
               <a href="/api/oauth/deriv/login" data-testid="button-deriv-login" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#7651bc]/70 bg-[#261b3d]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#d5b9ff] transition hover:border-[#ad7cff] hover:bg-[#352255] sm:px-3">
                 <LogIn size={13} /> DERIV LOGIN
               </a>
