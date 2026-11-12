@@ -191,9 +191,8 @@ test("Deriv API-token login validates tokens and stores valid credentials in an 
   }
 });
 
-test("signal trade endpoint requires an authenticated demo account and rejects real accounts", async () => {
+test("signal trades use the selected real or demo account and keep independent account sessions", async () => {
   const body = {
-    accountId: "CR54321",
     contractType: "match-digit",
     signalKey: "7",
     marketSymbol: "R_100",
@@ -204,23 +203,20 @@ test("signal trade endpoint requires an authenticated demo account and rejects r
     martingaleFactor: null,
     takeProfit: 10,
     stopLoss: 5,
-    sessionProfit: 0,
+    sessionProfit: 999,
   };
-  const anonymous = await fetch(`${baseUrl}/api/oauth/deriv/trading/execute`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  assert.equal(anonymous.status, 401);
-
   const nativeFetch = globalThis.fetch;
+  const nativeWebSocket = globalThis.WebSocket;
+  const websocketRequests = [];
+  const accounts = [
+    { account_id: "CR-DEMO-54321", balance: 500, currency: "USD", status: "active", account_type: "demo" },
+    { account_id: "CR-REAL-54321", balance: 500, currency: "USD", status: "active", account_type: "real" },
+  ];
   globalThis.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.origin === "https://api.derivws.com") {
       return new Response(JSON.stringify({
-        data: [
-          { account_id: "CR54321", balance: 500, currency: "USD", status: "active", account_type: "real" },
-        ],
+        data: accounts,
       }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -229,17 +225,107 @@ test("signal trade endpoint requires an authenticated demo account and rejects r
     return nativeFetch(input, init);
   };
 
+  class MockDerivWebSocket extends EventTarget {
+    constructor(url) {
+      super();
+      this.url = url;
+      setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+    }
+
+    send(serializedRequest) {
+      const request = JSON.parse(serializedRequest);
+      websocketRequests.push(request);
+      let response;
+      if (request.authorize) {
+        response = {
+          req_id: request.req_id,
+          authorize: { account_list: accounts.map((account) => ({ loginid: account.account_id })) },
+        };
+      } else if (request.switch_account) {
+        response = {
+          req_id: request.req_id,
+          switch_account: { loginid: request.loginid },
+        };
+      } else if (request.proposal) {
+        response = {
+          req_id: request.req_id,
+          proposal: { id: `proposal-${request.req_id}`, ask_price: request.amount },
+        };
+      } else if (request.buy) {
+        response = {
+          req_id: request.req_id,
+          buy: { contract_id: `contract-${request.req_id}` },
+        };
+      } else {
+        response = {
+          req_id: request.req_id,
+          msg_type: "proposal_open_contract",
+          proposal_open_contract: {
+            contract_id: "contract-4",
+            is_sold: 1,
+            profit: 2,
+          },
+        };
+      }
+      queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify(response),
+      })));
+    }
+
+    close() {}
+  }
+  globalThis.WebSocket = MockDerivWebSocket;
+
   try {
-    const prohibited = await nativeFetch(`${baseUrl}/api/oauth/deriv/trading/execute`, {
+    const anonymous = await nativeFetch(`${baseUrl}/api/oauth/deriv/trading/execute`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        cookie: "pulsefactor_deriv_session=test-access-token",
-      },
-      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...body, accountId: "CR-REAL-54321" }),
     });
-    assert.equal(prohibited.status, 403);
-    assert.match((await prohibited.json()).error, /demo accounts/i);
+    assert.equal(anonymous.status, 401);
+    const anonymousSession = await nativeFetch(
+      `${baseUrl}/api/oauth/deriv/trading/session?accountId=CR-REAL-54321`,
+    );
+    assert.equal(anonymousSession.status, 401);
+
+    for (const accountId of ["CR-DEMO-54321", "CR-REAL-54321"]) {
+      const response = await nativeFetch(`${baseUrl}/api/oauth/deriv/trading/execute`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: "pulsefactor_deriv_session=test-access-token",
+        },
+        body: JSON.stringify({ ...body, accountId }),
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        contractId: "contract-4",
+        profit: 2,
+        accountId,
+        stake: 1,
+        nextStake: 1,
+        sessionProfit: 2,
+        sessionStopped: false,
+      });
+      assert.ok(websocketRequests.some((request) => request.switch_account === 1 && request.loginid === accountId));
+
+      const session = await nativeFetch(
+        `${baseUrl}/api/oauth/deriv/trading/session?accountId=${accountId}`,
+        { headers: { cookie: "pulsefactor_deriv_session=test-access-token" } },
+      );
+      assert.equal(session.status, 200);
+      assert.deepEqual(await session.json(), {
+        accountId,
+        sessionProfit: 2,
+        sessionStopped: false,
+      });
+    }
+
+    const unavailableAccount = await nativeFetch(
+      `${baseUrl}/api/oauth/deriv/trading/session?accountId=CR-NOT-OWNED`,
+      { headers: { cookie: "pulsefactor_deriv_session=test-access-token" } },
+    );
+    assert.equal(unavailableAccount.status, 403);
 
     const malformed = await nativeFetch(`${baseUrl}/api/oauth/deriv/trading/execute`, {
       method: "POST",
@@ -247,11 +333,27 @@ test("signal trade endpoint requires an authenticated demo account and rejects r
         "content-type": "application/json",
         cookie: "pulsefactor_deriv_session=test-access-token",
       },
-      body: JSON.stringify({ ...body, signalKey: "8" }),
+      body: JSON.stringify({ ...body, accountId: "CR-REAL-54321", signalKey: "8" }),
     });
     assert.equal(malformed.status, 400);
+
+    const resetReal = await nativeFetch(`${baseUrl}/api/oauth/deriv/trading/session/reset`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: "pulsefactor_deriv_session=test-access-token",
+      },
+      body: JSON.stringify({ accountId: "CR-REAL-54321" }),
+    });
+    assert.equal(resetReal.status, 200);
+    assert.deepEqual(await resetReal.json(), {
+      accountId: "CR-REAL-54321",
+      sessionProfit: 0,
+      sessionStopped: false,
+    });
   } finally {
     globalThis.fetch = nativeFetch;
+    globalThis.WebSocket = nativeWebSocket;
   }
 });
 

@@ -33,7 +33,6 @@ export type DerivSignalTrade = {
   stake: number;
   takeProfit: number;
   stopLoss: number;
-  sessionProfit: number;
   martingaleEnabled: boolean;
   strategy: MultiplierLevel;
   martingaleFactor: number | null;
@@ -98,7 +97,6 @@ export function createDerivSignalTrade(
     stake: settings.stake,
     takeProfit: settings.takeProfit,
     stopLoss: settings.stopLoss,
-    sessionProfit: settings.sessionProfit,
     martingaleEnabled: settings.martingaleEnabled,
     strategy: settings.multiplierLevel,
     martingaleFactor: settings.martingaleEnabled ? settings.martingaleFactor : null,

@@ -48,8 +48,7 @@ type DigitScannerViewProps = {
 };
 
 const TICK_COLLECTION_SECONDS = 10;
-const DECISION_PHASE_SECONDS = 5;
-const SCANNER_COUNTDOWN_SECONDS = TICK_COLLECTION_SECONDS + DECISION_PHASE_SECONDS;
+const SCANNER_COUNTDOWN_SECONDS = TICK_COLLECTION_SECONDS;
 const PREDICTION_VALIDITY_SECONDS = 30;
 
 function formatPercent(value: number | null) {
@@ -140,7 +139,7 @@ export function DigitScannerView({
     scanStartTickVersionsRef.current = new Map(
       marketsRef.current.map((market) => [market.symbol, market.tickVersion]),
     );
-    setScanMessage(`Collecting 10 fresh ticks for 10s, then analyzing 100 prior + 10 fresh ticks for 5s.`);
+    setScanMessage(`Collecting 10 fresh ticks for 10s; a validated prediction will be traded as soon as the scan completes.`);
     setScanPhase('collecting');
     setScanCountdownSeconds(SCANNER_COUNTDOWN_SECONDS);
     setIsAnalyzing(true);
@@ -161,8 +160,6 @@ export function DigitScannerView({
 
     const scanStartedAt = Date.now();
     const collectionDeadline = scanStartedAt + TICK_COLLECTION_SECONDS * 1000;
-    const finalDeadline = scanStartedAt + SCANNER_COUNTDOWN_SECONDS * 1000;
-    let decisionTimer: number | null = null;
     let decisionStarted = false;
 
     const finishScan = (results: MarketCandidate[], scannedMarketCount: number) => {
@@ -247,10 +244,7 @@ export function DigitScannerView({
       if (decisionStarted) return;
       decisionStarted = true;
       setScanPhase('deciding');
-      setScanCountdownSeconds(Math.max(
-        0,
-        Math.ceil((finalDeadline - Date.now()) / 1000),
-      ));
+      setScanCountdownSeconds(0);
       setScanMessage(
         `Analyzing the prior ${SCANNER_PRIOR_TICK_COUNT} ticks plus whatever fresh ticks arrived.`,
       );
@@ -288,32 +282,14 @@ export function DigitScannerView({
       }
 
       const scannedMarketCount = scanTicksByMarket.size;
-      const completeDecision = () => {
-        if (decisionTimer !== null) {
-          window.clearInterval(decisionTimer);
-          decisionTimer = null;
-        }
-        finishScan(finalResults, scannedMarketCount);
-      };
-      const updateDecisionTimer = () => {
-        const secondsRemaining = Math.max(
-          0,
-          Math.ceil((finalDeadline - Date.now()) / 1000),
-        );
-        setScanCountdownSeconds(secondsRemaining);
-        if (secondsRemaining === 0) completeDecision();
-      };
-      updateDecisionTimer();
-      if (Date.now() < finalDeadline) {
-        decisionTimer = window.setInterval(updateDecisionTimer, 100);
-      }
+      finishScan(finalResults, scannedMarketCount);
     };
 
     const collectionTimer = window.setInterval(() => {
       const now = Date.now();
       setScanCountdownSeconds(Math.max(
         0,
-        Math.ceil((finalDeadline - now) / 1000),
+        Math.ceil((collectionDeadline - now) / 1000),
       ));
       if (now >= collectionDeadline) {
         window.clearInterval(collectionTimer);
@@ -323,7 +299,6 @@ export function DigitScannerView({
 
     return () => {
       window.clearInterval(collectionTimer);
-      if (decisionTimer !== null) window.clearInterval(decisionTimer);
     };
   }, [contractType, configuration, feedStatus, isAnalyzing]);
 
@@ -418,7 +393,7 @@ export function DigitScannerView({
               </span>
               <span className="rounded-md border border-[#214c98] bg-[#102653] px-2.5 py-1 font-mono-ui text-[9px] font-bold text-[#70baff]">
                 {isAnalyzing
-                  ? scanPhase === 'collecting' ? '10s COLLECTION' : '5s DECISION'
+                  ? scanPhase === 'collecting' ? '10s COLLECTION' : 'ANALYZING'
                   : displayedPrediction
                     ? `PICK EXPIRES IN ${predictionSecondsRemaining}s`
                     : feedStatusLabel}
@@ -521,12 +496,12 @@ export function DigitScannerView({
                       ))}
                     </strong>
                     <p className="font-mono-ui text-[9px] font-bold tracking-wider text-[#dce6ef]">
-                      {scanPhase === 'collecting' ? 'COLLECTION + DECISION TIME REMAINING' : 'DECISION TIME REMAINING'}
+                      {scanPhase === 'collecting' ? 'SCAN TIME REMAINING' : 'ANALYZING SIGNAL'}
                     </p>
                     <p className="mt-2 text-[9px] text-[#82939a]">
                       {scanPhase === 'collecting'
-                        ? `Collecting 10 fresh ticks across ${totalMarkets} markets; the prediction is decided in the final 5 seconds.`
-                        : `Using the prior 100 ticks plus any fresh ticks received. Low-data candidates remain unconfirmed.`}
+                        ? `Collecting 10 fresh ticks across ${totalMarkets} markets; the signal is analyzed and traded immediately when the scan completes.`
+                        : `Using the prior 100 ticks plus fresh ticks. Validated signals are submitted immediately; low-data candidates remain unconfirmed.`}
                     </p>
                     <div className="mx-auto mt-3 h-1.5 max-w-sm overflow-hidden rounded-full bg-[#1a2636]">
                       <div

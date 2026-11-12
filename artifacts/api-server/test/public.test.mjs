@@ -102,7 +102,10 @@ test("app page and assets are publicly available without a login", async () => {
   assert.match(bundle, /select-trading-multiplier-level/);
   assert.match(bundle, /DYNAMIC HYBRID/);
   assert.match(bundle, /toggle-martingale/);
-  assert.match(bundle, /ARM DEMO AUTO-TRADING/);
+  assert.match(bundle, /AUTO-TRADING/);
+  assert.match(bundle, /REAL/);
+  assert.match(bundle, /DEMO/);
+  assert.doesNotMatch(bundle, /Real-account trades are disabled/);
   assert.match(bundle, /https:\/\/pulsefactor\.space\//);
   assert.match(bundle, /DERIV LOGIN/);
   assert.doesNotMatch(bundle, /button-api-token-login/);

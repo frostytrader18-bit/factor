@@ -296,9 +296,15 @@ function Home() {
   const [scannerTickVersionsByMarket, setScannerTickVersionsByMarket] = useState<Record<string, number>>({});
   const [predictionOutcomes, setPredictionOutcomes] = useState<PredictionOutcomeRecord[]>([]);
   const [signalTradingSettings, setSignalTradingSettings] = useState<SignalTradingSettings>(readSignalTradingSettings);
+  const [tradingSessionAccountId, setTradingSessionAccountId] = useState('');
+  const [tradingSessionLoading, setTradingSessionLoading] = useState(false);
   const [tradingBusy, setTradingBusy] = useState(false);
   const [tradingStatus, setTradingStatus] = useState('');
   const activeTradeRef = useRef(false);
+  const armedAccountIdRef = useRef<string | null>(null);
+  const selectedAccountIdRef = useRef(selectedDerivAccount);
+  const tradingSessionRequestRef = useRef(0);
+  selectedAccountIdRef.current = selectedDerivAccount;
   const [performanceClock, setPerformanceClock] = useState(Date.now());
   const hasLivePredictions = predictionOutcomes.some(
     (outcome) => outcome.status === 'tracking',
@@ -518,11 +524,73 @@ function Home() {
   useEffect(() => {
     if (!signalTradingSettings.armed) return;
     const account = derivAccounts.find((item) => item.accountId === selectedDerivAccount);
-    if (!derivConnected || account?.accountType !== 'demo') {
+    if (!derivConnected || !account || account.accountId !== armedAccountIdRef.current) {
+      armedAccountIdRef.current = null;
       setSignalTradingSettings((current) => ({ ...current, armed: false }));
-      setTradingStatus('Auto-trading disarmed because the selected account is not a connected demo account.');
+      setTradingStatus('Auto-trading disarmed because the selected Deriv account changed or disconnected.');
     }
   }, [derivAccounts, derivConnected, selectedDerivAccount, signalTradingSettings.armed]);
+
+  useEffect(() => {
+    const account = derivAccounts.find((item) => item.accountId === selectedDerivAccount);
+    const requestId = ++tradingSessionRequestRef.current;
+    if (!derivConnected || !account) {
+      setTradingSessionLoading(false);
+      setTradingSessionAccountId('');
+      setSignalTradingSettings((current) => ({ ...current, sessionProfit: 0 }));
+      return;
+    }
+
+    setTradingSessionLoading(true);
+    setTradingSessionAccountId('');
+    void fetch(`/api/oauth/deriv/trading/session?accountId=${encodeURIComponent(account.accountId)}`, {
+      cache: 'no-store',
+    }).then(async (response) => {
+      const result: unknown = await response.json();
+      const record = result && typeof result === 'object'
+        ? result as Record<string, unknown>
+        : {};
+      if (!response.ok) {
+        throw new Error(typeof record.error === 'string'
+          ? record.error
+          : `Trading session check failed with HTTP ${response.status}.`);
+      }
+      if (
+        record.accountId !== account.accountId
+        || typeof record.sessionProfit !== 'number'
+        || !Number.isFinite(record.sessionProfit)
+        || typeof record.sessionStopped !== 'boolean'
+      ) {
+        throw new Error('Deriv returned an invalid account trading session.');
+      }
+      const sessionProfit = record.sessionProfit;
+      if (
+        requestId === tradingSessionRequestRef.current
+        && selectedAccountIdRef.current === account.accountId
+      ) {
+        setSignalTradingSettings((current) => ({
+          ...current,
+          sessionProfit,
+          armed: record.sessionStopped ? false : current.armed,
+        }));
+        setTradingSessionAccountId(account.accountId);
+        if (record.sessionStopped) {
+          armedAccountIdRef.current = null;
+          setTradingStatus('This account reached its session limit. Reset its session before trading again.');
+        }
+      }
+    }).catch((error: unknown) => {
+      console.error('Unable to load the selected account trading session.', error);
+      if (requestId === tradingSessionRequestRef.current) {
+        setTradingSessionAccountId('');
+        setTradingStatus(`ERROR: ${error instanceof Error ? error.message : 'Account trading session could not be loaded.'}`);
+      }
+    }).finally(() => {
+      if (requestId === tradingSessionRequestRef.current) {
+        setTradingSessionLoading(false);
+      }
+    });
+  }, [derivAccounts, derivConnected, selectedDerivAccount]);
 
   useEffect(() => {
     document.documentElement.dataset.workspaceTheme = settingsOpen
@@ -626,9 +694,14 @@ function Home() {
     }
 
     const account = derivAccounts.find((item) => item.accountId === selectedDerivAccount);
-    if (!derivConnected || !account || account.accountType !== 'demo') {
+    if (
+      !derivConnected
+      || !account
+      || account.accountId !== armedAccountIdRef.current
+      || tradingSessionAccountId !== account.accountId
+    ) {
       setSignalTradingSettings((current) => ({ ...current, armed: false }));
-      setTradingStatus('ERROR: Automated trading requires a connected demo account. Trading has been disarmed.');
+      setTradingStatus('ERROR: Trading requires a connected, selected Deriv account with a verified trading session. Trading has been disarmed.');
       return;
     }
 
@@ -650,13 +723,13 @@ function Home() {
       || trade.stake > 10000
     ) {
       setSignalTradingSettings((current) => ({ ...current, armed: false }));
-      setTradingStatus('ERROR: The calculated stake exceeds the selected demo balance or the $10,000 safety cap. Trading has been disarmed.');
+      setTradingStatus('ERROR: The calculated stake exceeds the selected account balance or the $10,000 safety cap. Trading has been disarmed.');
       return;
     }
 
     activeTradeRef.current = true;
     setTradingBusy(true);
-    setTradingStatus(`Submitting ${prediction.signalLabel} on ${prediction.marketLabel} (${trade.stake} ${account.currency})…`);
+    setTradingStatus(`Submitting ${prediction.signalLabel} on ${prediction.marketLabel} via ${account.accountType} account ${account.accountId} (${trade.stake} ${account.currency})…`);
     try {
       const response = await fetch('/api/oauth/deriv/trading/execute', {
         method: 'POST',
@@ -669,14 +742,22 @@ function Home() {
         : {};
       if (!response.ok) {
         if (record.sessionStopped === true) {
+          if (record.accountId !== account.accountId) {
+            setSignalTradingSettings((current) => ({ ...current, armed: false }));
+            armedAccountIdRef.current = null;
+            setTradingStatus('ERROR: Deriv returned a session limit for an unexpected account. Trading has been disarmed.');
+            return;
+          }
           setSignalTradingSettings((current) => ({
             ...current,
-            sessionProfit: typeof record.sessionProfit === 'number'
+            sessionProfit: selectedAccountIdRef.current === account.accountId
+              && typeof record.sessionProfit === 'number'
               && Number.isFinite(record.sessionProfit)
               ? record.sessionProfit
               : current.sessionProfit,
             armed: false,
           }));
+          armedAccountIdRef.current = null;
           setTradingStatus('Take-profit or stop-loss reached. Auto-trading is stopped; reset the session to resume.');
           return;
         }
@@ -691,35 +772,40 @@ function Home() {
       }
 
       const profit = record.profit;
-      if (typeof profit !== 'number' || !Number.isFinite(profit)) {
+      const sessionProfit = record.sessionProfit;
+      const stakeUsed = record.stake;
+      const contractId = record.contractId;
+      if (
+        typeof profit !== 'number' || !Number.isFinite(profit)
+        || typeof sessionProfit !== 'number' || !Number.isFinite(sessionProfit)
+        || typeof record.sessionStopped !== 'boolean'
+        || typeof stakeUsed !== 'number' || !Number.isFinite(stakeUsed) || stakeUsed <= 0
+        || typeof contractId !== 'string'
+        || record.accountId !== account.accountId
+      ) {
         setSignalTradingSettings((current) => ({ ...current, armed: false }));
-        setTradingStatus('ERROR: Deriv did not return a confirmed trade result. Trading has been disarmed.');
+        armedAccountIdRef.current = null;
+        setTradingStatus('ERROR: Deriv did not return a valid result for the selected account. Trading has been disarmed.');
         return;
       }
 
-      const sessionProfit = typeof record.sessionProfit === 'number'
-        && Number.isFinite(record.sessionProfit)
-        ? record.sessionProfit
-        : signalTradingSettings.sessionProfit + profit;
       const limitReached = record.sessionStopped === true || hasReachedSessionLimit(
         sessionProfit,
         signalTradingSettings.takeProfit,
         signalTradingSettings.stopLoss,
       );
-      setSignalTradingSettings((current) => ({
-        ...current,
-        sessionProfit,
-        armed: limitReached ? false : current.armed,
-      }));
-      const contractId = typeof record.contractId === 'string' ? record.contractId : 'unknown';
-      const stakeUsed = typeof record.stake === 'number' && Number.isFinite(record.stake)
-        ? record.stake
-        : trade.stake;
+      if (selectedAccountIdRef.current === account.accountId) {
+        setSignalTradingSettings((current) => ({
+          ...current,
+          sessionProfit,
+          armed: limitReached ? false : current.armed,
+        }));
+      }
       setTradingStatus(
-        `${prediction.signalLabel} · stake ${stakeUsed} ${account.currency} · ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} ${account.currency} · contract ${contractId}${limitReached ? ' · SESSION LIMIT REACHED, AUTO-TRADING DISARMED' : ''}`,
+        `${account.accountType.toUpperCase()} ${account.accountId} · ${prediction.signalLabel} · stake ${stakeUsed} ${account.currency} · ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} ${account.currency} · contract ${contractId}${limitReached ? ' · SESSION LIMIT REACHED, AUTO-TRADING DISARMED' : ''}`,
       );
       recordActivity(
-        profit >= 0 ? 'Demo signal trade won' : 'Demo signal trade lost',
+        profit >= 0 ? 'Signal trade won' : 'Signal trade lost',
         `${prediction.signalLabel} · ${prediction.marketLabel} · ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} ${account.currency}.`,
         profit >= 0 ? 'green' : 'gold',
       );
@@ -756,13 +842,18 @@ function Home() {
 
   const toggleSignalTrading = () => {
     if (signalTradingSettings.armed) {
+      armedAccountIdRef.current = null;
       setSignalTradingSettings((current) => ({ ...current, armed: false }));
       setTradingStatus('Auto-trading disarmed. Any order already submitted will continue to settlement.');
       return;
     }
     const account = derivAccounts.find((item) => item.accountId === selectedDerivAccount);
-    if (!derivConnected || account?.accountType !== 'demo') {
-      setTradingStatus('ERROR: Select a connected Deriv demo account before arming auto-trading.');
+    if (!derivConnected || !account) {
+      setTradingStatus('ERROR: Select a connected Deriv account before arming auto-trading.');
+      return;
+    }
+    if (tradingSessionLoading || tradingSessionAccountId !== account.accountId) {
+      setTradingStatus('ERROR: Wait for the selected account trading session to be verified before arming.');
       return;
     }
     if (scannerFeedStatus !== 'live') {
@@ -793,8 +884,9 @@ function Home() {
       setTradingStatus('ERROR: Enter a martingale value from 1 to 100 for the selected strategy.');
       return;
     }
+    armedAccountIdRef.current = account.accountId;
     setSignalTradingSettings((current) => ({ ...current, armed: true }));
-    setTradingStatus('Auto-trading armed for the selected demo account. Only validated scanner signals can place trades.');
+    setTradingStatus(`Auto-trading armed for the selected ${account.accountType} account. Only validated scanner signals can place trades.`);
   };
 
   const clearTradingValues = () => {
@@ -812,8 +904,8 @@ function Home() {
   const resetTradingSession = () => {
     if (signalTradingSettings.armed || tradingBusy) return;
     const account = derivAccounts.find((item) => item.accountId === selectedDerivAccount);
-    if (!derivConnected || account?.accountType !== 'demo') {
-      setTradingStatus('ERROR: Connect and select a demo account before resetting its trading session.');
+    if (!derivConnected || !account) {
+      setTradingStatus('ERROR: Connect and select a Deriv account before resetting its trading session.');
       return;
     }
     setTradingBusy(true);
@@ -831,10 +923,14 @@ function Home() {
           ? record.error
           : `Session reset failed with HTTP ${response.status}.`);
       }
-      setSignalTradingSettings((current) => ({ ...current, sessionProfit: 0, armed: false }));
-      setTradingStatus('Demo session result reset. Auto-trading remains disarmed.');
+      if (selectedAccountIdRef.current === account.accountId) {
+        setSignalTradingSettings((current) => ({ ...current, sessionProfit: 0, armed: false }));
+        setTradingSessionAccountId(account.accountId);
+      }
+      armedAccountIdRef.current = null;
+      setTradingStatus(`${account.accountType} account session result reset. Auto-trading remains disarmed.`);
     }).catch((error: unknown) => {
-      console.error('Unable to reset the demo trading session.', error);
+      console.error('Unable to reset the account trading session.', error);
       setTradingStatus(`ERROR: ${error instanceof Error ? error.message : 'Session reset failed.'}`);
     }).finally(() => {
       setTradingBusy(false);

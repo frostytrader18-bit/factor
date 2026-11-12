@@ -2,10 +2,10 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import { logger } from "../lib/logger";
 import {
-  applyDemoTradeResult,
-  isDemoTradingSessionStopped,
-  type DemoTradingSession,
-} from "../lib/demo-trading-session";
+  applyTradeResult,
+  isTradingSessionStopped,
+  type TradingSession,
+} from "../lib/trading-session";
 import {
   applyMartingaleResult,
   getMartingaleProgress,
@@ -94,11 +94,10 @@ type SignalTradeRequest = {
   martingaleFactor: number | null;
   takeProfit: number;
   stopLoss: number;
-  sessionProfit: number;
 };
 
 const activeTradeAccounts = new Set<string>();
-const demoTradingSessions = new Map<string, DemoTradingSession>();
+const tradingSessions = new Map<string, TradingSession>();
 
 function getAccountRows(payload: unknown, depth = 0): unknown[] | null {
   if (Array.isArray(payload)) return payload;
@@ -167,7 +166,6 @@ function parseSignalTradeRequest(value: unknown): SignalTradeRequest | null {
   const martingaleFactor = value["martingaleFactor"];
   const takeProfit = value["takeProfit"];
   const stopLoss = value["stopLoss"];
-  const sessionProfit = value["sessionProfit"];
   if (
     typeof accountId !== "string" || accountId.length === 0 || accountId.length > 64
     || (contractType !== "match-digit" && contractType !== "differ"
@@ -184,7 +182,6 @@ function parseSignalTradeRequest(value: unknown): SignalTradeRequest | null {
     || (martingaleEnabled && martingaleFactor === null)
     || typeof takeProfit !== "number" || !Number.isFinite(takeProfit) || takeProfit <= 0 || takeProfit > 1000000
     || typeof stopLoss !== "number" || !Number.isFinite(stopLoss) || stopLoss <= 0 || stopLoss > 1000000
-    || typeof sessionProfit !== "number" || !Number.isFinite(sessionProfit)
   ) {
     return null;
   }
@@ -209,7 +206,6 @@ function parseSignalTradeRequest(value: unknown): SignalTradeRequest | null {
     martingaleFactor,
     takeProfit,
     stopLoss,
-    sessionProfit,
   };
 }
 
@@ -361,7 +357,7 @@ function waitForContractSettlement(
   });
 }
 
-async function executeDemoSignalTrade(
+async function executeSignalTrade(
   accessToken: string,
   account: DerivAccountBalance,
   trade: SignalTradeRequest,
@@ -378,7 +374,7 @@ async function executeDemoSignalTrade(
     if (Array.isArray(accounts) && !accounts.some((item) => (
       isRecord(item) && item["loginid"] === account.accountId
     ))) {
-      throw new Error("The selected demo account is not authorized for this session.");
+      throw new Error("The selected Deriv account is not authorized for this session.");
     }
 
     const switched = await sendDerivRequest(socket, 2, {
@@ -389,7 +385,7 @@ async function executeDemoSignalTrade(
       !isRecord(switched["switch_account"])
       || switched["switch_account"]["loginid"] !== account.accountId
     ) {
-      throw new Error("Deriv could not select the chosen demo account.");
+      throw new Error("Deriv could not select the chosen account.");
     }
 
     const proposalMessage = await sendDerivRequest(
@@ -714,20 +710,21 @@ router.post("/oauth/deriv/trading/execute", async (req, res) => {
     return;
   }
   const account = accounts.find((item) => item.accountId === trade.accountId);
-  if (!account || account.accountType !== "demo") {
-    res.status(403).json({ error: "Automated signal trading is restricted to active Deriv demo accounts." });
+  if (!account) {
+    res.status(403).json({ error: "The selected Deriv account is not active or is not available to this session." });
     return;
   }
-  const session = demoTradingSessions.get(account.accountId) ?? {
-    profit: trade.sessionProfit,
+  const session = tradingSessions.get(account.accountId) ?? {
+    profit: 0,
     stopped: false,
   };
-  if (isDemoTradingSessionStopped(session, trade.takeProfit, trade.stopLoss)) {
-    demoTradingSessions.set(account.accountId, session);
+  if (isTradingSessionStopped(session, trade.takeProfit, trade.stopLoss)) {
+    tradingSessions.set(account.accountId, session);
     res.status(409).json({
+      accountId: account.accountId,
       sessionStopped: true,
       sessionProfit: session.profit,
-      error: "The configured session profit or loss limit has been reached. Reset the demo trading session before trading again.",
+      error: "The configured session profit or loss limit has been reached. Reset this account's trading session before trading again.",
     });
     return;
   }
@@ -742,33 +739,34 @@ router.post("/oauth/deriv/trading/execute", async (req, res) => {
   const currentStake = getMartingaleStake(martingaleProgress);
   if (currentStake > account.balance || currentStake > 10000) {
     res.status(400).json({
-      error: "The martingale stake exceeds the selected demo account balance or the $10,000 safety cap. Reduce the base stake or martingale value.",
+      error: "The martingale stake exceeds the selected account balance or the $10,000 safety cap. Reduce the base stake or martingale value.",
     });
     return;
   }
   session.martingale = martingaleProgress;
 
   if (activeTradeAccounts.has(account.accountId)) {
-    res.status(409).json({ error: "A trade is already being processed for this demo account." });
+    res.status(409).json({ error: "A trade is already being processed for this account." });
     return;
   }
   activeTradeAccounts.add(account.accountId);
   try {
-    const result = await executeDemoSignalTrade(
+    const result = await executeSignalTrade(
       accessToken,
       account,
       { ...trade, stake: currentStake },
     );
-    applyDemoTradeResult(session, result.profit, trade.takeProfit, trade.stopLoss);
+    applyTradeResult(session, result.profit, trade.takeProfit, trade.stopLoss);
     session.martingale = applyMartingaleResult(
       martingaleProgress,
       martingaleConfiguration,
       currentStake,
       result.profit,
     );
-    demoTradingSessions.set(account.accountId, session);
+    tradingSessions.set(account.accountId, session);
     res.status(200).json({
       ...result,
+      accountId: account.accountId,
       stake: currentStake,
       nextStake: getMartingaleStake(session.martingale),
       sessionProfit: session.profit,
@@ -796,6 +794,44 @@ router.post("/oauth/deriv/trading/execute", async (req, res) => {
   }
 });
 
+router.get("/oauth/deriv/trading/session", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const accessToken = getCookie(req, ACCESS_TOKEN_COOKIE);
+  if (!accessToken) {
+    res.status(401).json({ error: "Connect a Deriv account before checking its trading session." });
+    return;
+  }
+  const accountId = req.query["accountId"];
+  if (typeof accountId !== "string" || accountId.length === 0 || accountId.length > 64) {
+    res.status(400).json({ error: "Select a valid Deriv account." });
+    return;
+  }
+
+  try {
+    const response = await validateApiToken(accessToken);
+    if (!response.ok) {
+      res.status(response.status === 401 || response.status === 403 ? 401 : 503)
+        .json({ error: "Could not verify the Deriv account before checking its session." });
+      return;
+    }
+    const accounts = parseAccountBalances(await response.json());
+    const account = accounts?.find((item) => item.accountId === accountId);
+    if (!account) {
+      res.status(403).json({ error: "The selected Deriv account is not active or is not available to this session." });
+      return;
+    }
+    const session = tradingSessions.get(account.accountId);
+    res.status(200).json({
+      accountId: account.accountId,
+      sessionProfit: session?.profit ?? 0,
+      sessionStopped: session?.stopped ?? false,
+    });
+  } catch (error) {
+    logger.error({ err: error }, "Could not verify the Deriv account before checking its trading session");
+    res.status(503).json({ error: "Could not verify the Deriv account before checking its session." });
+  }
+});
+
 router.post("/oauth/deriv/trading/session/reset", async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   const accessToken = getCookie(req, ACCESS_TOKEN_COOKIE);
@@ -805,7 +841,7 @@ router.post("/oauth/deriv/trading/session/reset", async (req, res) => {
   }
   const accountId = req.body?.accountId;
   if (typeof accountId !== "string" || accountId.length === 0 || accountId.length > 64) {
-    res.status(400).json({ error: "Select a valid demo account." });
+    res.status(400).json({ error: "Select a valid Deriv account." });
     return;
   }
 
@@ -818,16 +854,16 @@ router.post("/oauth/deriv/trading/session/reset", async (req, res) => {
     }
     const accounts = parseAccountBalances(await response.json());
     const account = accounts?.find((item) => item.accountId === accountId);
-    if (!account || account.accountType !== "demo") {
-      res.status(403).json({ error: "Automated signal trading sessions are restricted to active demo accounts." });
+    if (!account) {
+      res.status(403).json({ error: "The selected Deriv account is not active or is not available to this session." });
       return;
     }
     if (activeTradeAccounts.has(account.accountId)) {
       res.status(409).json({ error: "Wait for the current trade to settle before resetting the session." });
       return;
     }
-    demoTradingSessions.delete(account.accountId);
-    res.status(200).json({ sessionProfit: 0 });
+    tradingSessions.delete(account.accountId);
+    res.status(200).json({ accountId: account.accountId, sessionProfit: 0, sessionStopped: false });
   } catch (error) {
     logger.error({ err: error }, "Could not verify the Deriv account before resetting its trading session");
     res.status(503).json({ error: "Could not verify the Deriv account before resetting its session." });

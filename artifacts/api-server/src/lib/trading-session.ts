@@ -1,13 +1,13 @@
 import type { MartingaleProgress } from "./martingale";
 
-export type DemoTradingSession = {
+export type TradingSession = {
   profit: number;
   stopped: boolean;
   martingale?: MartingaleProgress;
 };
 
-export function isDemoTradingSessionStopped(
-  session: DemoTradingSession,
+export function isTradingSessionStopped(
+  session: TradingSession,
   takeProfit: number,
   stopLoss: number,
 ): boolean {
@@ -17,13 +17,13 @@ export function isDemoTradingSessionStopped(
   return session.stopped;
 }
 
-export function applyDemoTradeResult(
-  session: DemoTradingSession,
+export function applyTradeResult(
+  session: TradingSession,
   profit: number,
   takeProfit: number,
   stopLoss: number,
-): DemoTradingSession {
+): TradingSession {
   session.profit += profit;
-  isDemoTradingSessionStopped(session, takeProfit, stopLoss);
+  isTradingSessionStopped(session, takeProfit, stopLoss);
   return session;
 }

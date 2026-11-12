@@ -476,7 +476,7 @@ export function MarketScannerDashboard({
           <button
             type="button"
             onClick={onToggleTrading}
-            disabled={tradingBusy || (tradingSettings.armed && selectedAccount?.accountType !== 'demo')}
+            disabled={tradingBusy}
             aria-pressed={tradingSettings.armed}
             data-testid="toggle-signal-trading"
             className={`flex min-h-9 items-center justify-center gap-2 rounded-lg border px-3 py-2 font-mono-ui text-[9px] font-extrabold tracking-wider transition disabled:cursor-not-allowed disabled:opacity-50 ${
@@ -486,7 +486,9 @@ export function MarketScannerDashboard({
             }`}
           >
             {tradingSettings.armed ? <Square size={12} /> : <Play size={12} />}
-            {tradingSettings.armed ? 'DISARM AUTO-TRADING' : 'ARM DEMO AUTO-TRADING'}
+            {tradingSettings.armed
+              ? 'DISARM AUTO-TRADING'
+              : `ARM ${selectedAccount?.accountType === 'real' ? 'REAL' : 'DEMO'} AUTO-TRADING`}
           </button>
           {selectedAccount && (
             <span className={`font-mono-ui text-[8px] font-bold tracking-wider ${
@@ -503,9 +505,9 @@ export function MarketScannerDashboard({
           className="mt-2 flex items-start gap-1.5 text-[9px] leading-relaxed text-[#9bb1b6]"
         >
           <AlertTriangle size={11} className="mt-0.5 shrink-0 text-[#d9ba78]" />
-          {tradingStatus || (selectedAccount?.accountType === 'demo'
-            ? 'Select your stake and session limits. Multiplier factors are optional and blank levels use the base stake.'
-            : 'Select a Deriv demo account in the balance menu to enable automated trading. Real-account trades are disabled.')}
+          {tradingStatus || (selectedAccount
+            ? `Trades will use the selected ${selectedAccount.accountType} account. Select your stake and session limits before arming.`
+            : 'Connect a Deriv account and select a real or demo account to enable signal trading.')}
         </p>
       </section>
 
