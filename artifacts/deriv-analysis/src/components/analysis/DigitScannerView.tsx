@@ -14,6 +14,7 @@ import {
 } from '@/lib/analysis-engine';
 import type { AnalysisEngineConfiguration } from '@/lib/contract-engines';
 import type { PredictionOutcomeStart } from '@/lib/performance';
+import { shouldScheduleAutomaticScan } from '@/lib/scanner-scheduling';
 
 type FeedStatus = 'connecting' | 'live' | 'reconnecting' | 'error';
 type ScannerSoundAlert = 'signal-found' | 'timer-ended';
@@ -41,6 +42,7 @@ type DigitScannerViewProps = {
   contractType: ContractType;
   autoScan: boolean;
   tradingArmed: boolean;
+  tradingBusy: boolean;
   tradingScanRequestId: number;
   feedStatus: FeedStatus;
   feedError: string | null;
@@ -78,6 +80,7 @@ export function DigitScannerView({
   contractType,
   autoScan,
   tradingArmed,
+  tradingBusy,
   tradingScanRequestId,
   feedStatus,
   feedError,
@@ -89,6 +92,7 @@ export function DigitScannerView({
   const [predictionSecondsRemaining, setPredictionSecondsRemaining] = useState(0);
   const [scanCountdownSeconds, setScanCountdownSeconds] = useState(0);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isAutomaticScan, setIsAutomaticScan] = useState(false);
   const [scanPhase, setScanPhase] = useState<'idle' | 'collecting' | 'deciding'>('idle');
   const [activePrediction, setActivePrediction] = useState<ActivePrediction | null>(null);
   const [lastManualScan, setLastManualScan] = useState<string | null>(null);
@@ -137,11 +141,12 @@ export function DigitScannerView({
     setScanPhase('idle');
   }, [configuration, contractType]);
 
-  const initiateManualScan = useCallback(() => {
+  const initiateManualScan = useCallback((automatic = false) => {
     if (feedStatus !== 'live' || isAnalyzing) {
       return;
     }
 
+    setIsAutomaticScan(automatic);
     setActivePrediction(null);
     setPredictionSecondsRemaining(0);
     setScanResults(null);
@@ -168,33 +173,53 @@ export function DigitScannerView({
     if (
       feedStatus !== 'live'
       || readyMarkets === 0
-      || predictionIsActive
       || isAnalyzing
     ) {
       return;
     }
 
     processedTradingScanRequestRef.current = tradingScanRequestId;
-    initiateManualScan();
+    initiateManualScan(true);
   }, [
     feedStatus,
     initiateManualScan,
     isAnalyzing,
-    predictionIsActive,
     readyMarkets,
     tradingArmed,
     tradingScanRequestId,
   ]);
 
   useEffect(() => {
-    if (!autoScan || feedStatus !== 'live' || readyMarkets === 0 || isAnalyzing || predictionIsActive) {
+    if (autoScan || !isAnalyzing || !isAutomaticScan) {
       return;
     }
 
-    const delay = scanResults === null
+    setIsAnalyzing(false);
+    setIsAutomaticScan(false);
+    setScanPhase('idle');
+    setScanCountdownSeconds(0);
+    setScanMessage('Automatic scan stopped.');
+  }, [autoScan, isAnalyzing, isAutomaticScan]);
+
+  useEffect(() => {
+    if (!shouldScheduleAutomaticScan({
+      autoScan,
+      feedLive: feedStatus === 'live',
+      readyMarkets,
+      isAnalyzing,
+      tradingArmed,
+      tradingBusy,
+      predictionActive: predictionIsActive,
+    })) {
+      return;
+    }
+
+    const delay = tradingArmed
       ? AUTO_SCAN_INITIAL_DELAY_MS
-      : AUTO_SCAN_RETRY_DELAY_MS;
-    const timer = window.setTimeout(initiateManualScan, delay);
+      : scanResults === null
+        ? AUTO_SCAN_INITIAL_DELAY_MS
+        : AUTO_SCAN_RETRY_DELAY_MS;
+    const timer = window.setTimeout(() => initiateManualScan(true), delay);
     return () => window.clearTimeout(timer);
   }, [
     autoScan,
@@ -204,6 +229,8 @@ export function DigitScannerView({
     predictionIsActive,
     readyMarkets,
     scanResults,
+    tradingArmed,
+    tradingBusy,
   ]);
 
   useEffect(() => {
@@ -429,7 +456,7 @@ export function DigitScannerView({
               </div>
               <button
                 type="button"
-                onClick={initiateManualScan}
+                onClick={() => initiateManualScan()}
                 disabled={!canScan}
                 data-testid="scanner-scan-now"
                 className="flex items-center gap-1.5 rounded-md border border-[#c4a44e] bg-gradient-to-r from-[#b68a31] to-[#e0bc5c] px-3 py-1.5 font-mono-ui text-[9px] font-extrabold tracking-wider text-[#211b10] shadow-[0_3px_15px_rgba(195,155,58,.14)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-45"

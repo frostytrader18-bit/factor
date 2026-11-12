@@ -501,7 +501,7 @@ export function MarketScannerDashboard({
           <button
             type="button"
             onClick={onToggleTrading}
-            disabled={tradingBusy}
+            disabled={!tradingSettings.armed && tradingBusy}
             aria-pressed={tradingSettings.armed}
             data-testid="toggle-signal-trading"
             className={`flex min-h-9 items-center justify-center gap-2 rounded-lg border px-3 py-2 font-mono-ui text-[9px] font-extrabold tracking-wider transition disabled:cursor-not-allowed disabled:opacity-50 ${
@@ -541,6 +541,7 @@ export function MarketScannerDashboard({
         contractType={settings.contractType}
         autoScan={autoScan}
         tradingArmed={tradingSettings.armed}
+        tradingBusy={tradingBusy}
         tradingScanRequestId={tradingScanRequestId}
         configuration={settings.configuration}
         feedStatus={feedStatus}

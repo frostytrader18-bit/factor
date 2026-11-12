@@ -6,6 +6,7 @@ import {
   hasReachedSessionLimit,
   parseSignalTradingSettings,
 } from './signal-trading.ts';
+import { shouldScheduleAutomaticScan } from './scanner-scheduling.ts';
 
 test('trading defaults are disarmed with a single unconfigured martingale value', () => {
   assert.equal(DEFAULT_SIGNAL_TRADING_SETTINGS.armed, false);
@@ -138,4 +139,26 @@ test('session limits stop at configured profit or loss thresholds', () => {
   assert.equal(hasReachedSessionLimit(10, 10, 5), true);
   assert.equal(hasReachedSessionLimit(-5, 10, 5), true);
   assert.equal(hasReachedSessionLimit(0, 10, 5), false);
+});
+
+test('armed auto-trading keeps scanning after each settled trade, but pauses during a trade or at a limit', () => {
+  const readyState = {
+    autoScan: true,
+    feedLive: true,
+    readyMarkets: 13,
+    isAnalyzing: false,
+    tradingArmed: true,
+    tradingBusy: false,
+    predictionActive: true,
+  };
+  assert.equal(shouldScheduleAutomaticScan(readyState), true);
+  assert.equal(shouldScheduleAutomaticScan({ ...readyState, tradingBusy: true }), false);
+  assert.equal(shouldScheduleAutomaticScan({ ...readyState, autoScan: false }), false);
+  assert.equal(shouldScheduleAutomaticScan({ ...readyState, feedLive: false }), false);
+  assert.equal(shouldScheduleAutomaticScan({ ...readyState, readyMarkets: 0 }), false);
+  assert.equal(shouldScheduleAutomaticScan({
+    ...readyState,
+    tradingArmed: false,
+    predictionActive: true,
+  }), false);
 });

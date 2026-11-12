@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseDerivAccountBalances } from './deriv-accounts.ts';
+import { getDefaultDerivAccountId, parseDerivAccountBalances } from './deriv-accounts.ts';
 
 test('parses demo and real balances and skips inactive accounts', () => {
   assert.deepEqual(parseDerivAccountBalances({
@@ -23,6 +23,14 @@ test('accepts camel-case account IDs and numeric balance strings', () => {
   }), [
     { accountId: 'CR100', accountType: 'demo', balance: 10000.25, currency: 'USD' },
   ]);
+});
+
+test("defaults to Deriv's first returned account instead of silently preferring real", () => {
+  assert.equal(getDefaultDerivAccountId([
+    { accountId: 'CR-DEMO', accountType: 'demo', balance: 10000, currency: 'USD' },
+    { accountId: 'CR-REAL', accountType: 'real', balance: 250, currency: 'USD' },
+  ]), 'CR-DEMO');
+  assert.equal(getDefaultDerivAccountId([]), '');
 });
 
 test('rejects unusable account data and accepts an empty account list', () => {

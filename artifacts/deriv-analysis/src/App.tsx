@@ -36,7 +36,11 @@ import {
 } from 'lucide-react';
 import { ActivityLogView, type ActivityRecord } from './components/analysis/ActivityLogView';
 import { DERIV_SIGNUP_URL } from '@/lib/deriv-oauth';
-import { parseDerivAccountBalances, type DerivAccountBalance } from '@/lib/deriv-accounts';
+import {
+  getDefaultDerivAccountId,
+  parseDerivAccountBalances,
+  type DerivAccountBalance,
+} from '@/lib/deriv-accounts';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -306,6 +310,16 @@ function Home() {
   const selectedAccountIdRef = useRef(selectedDerivAccount);
   const tradingSessionRequestRef = useRef(0);
   selectedAccountIdRef.current = selectedDerivAccount;
+  const stopAtSessionLimit = (status: string, sessionProfit?: number) => {
+    armedAccountIdRef.current = null;
+    setSignalTradingSettings((current) => ({
+      ...current,
+      ...(sessionProfit === undefined ? {} : { sessionProfit }),
+      armed: false,
+    }));
+    setAppPreferences((current) => ({ ...current, autoScan: false }));
+    setTradingStatus(status);
+  };
   const [performanceClock, setPerformanceClock] = useState(Date.now());
   const hasLivePredictions = predictionOutcomes.some(
     (outcome) => outcome.status === 'tracking',
@@ -369,7 +383,7 @@ function Home() {
           setDerivAccounts(accounts);
           setSelectedDerivAccount((current) => accounts.some((account) => account.accountId === current)
             ? current
-            : (accounts.find((account) => account.accountType === 'real') ?? accounts[0])?.accountId ?? '');
+            : getDefaultDerivAccountId(accounts));
           setDerivConnected(true);
           if (accounts.length === 0) setNotice('No active Deriv trading accounts were found.');
         }
@@ -569,15 +583,17 @@ function Home() {
         requestId === tradingSessionRequestRef.current
         && selectedAccountIdRef.current === account.accountId
       ) {
-        setSignalTradingSettings((current) => ({
-          ...current,
-          sessionProfit,
-          armed: record.sessionStopped ? false : current.armed,
-        }));
         setTradingSessionAccountId(account.accountId);
         if (record.sessionStopped) {
-          armedAccountIdRef.current = null;
-          setTradingStatus('This account reached its session limit. Reset its session before trading again.');
+          stopAtSessionLimit(
+            'This account reached its session limit. Auto-scan and trading are stopped; reset its session before restarting.',
+            sessionProfit,
+          );
+        } else {
+          setSignalTradingSettings((current) => ({
+            ...current,
+            sessionProfit,
+          }));
         }
       }
     }).catch((error: unknown) => {
@@ -707,8 +723,7 @@ function Home() {
       signalTradingSettings.takeProfit,
       signalTradingSettings.stopLoss,
     )) {
-      setSignalTradingSettings((current) => ({ ...current, armed: false }));
-      setTradingStatus('Session profit/loss limit reached. Automated trading has been disarmed.');
+      stopAtSessionLimit('Session profit/loss limit reached. Auto-scan and trading are stopped.');
       return;
     }
 
@@ -746,17 +761,14 @@ function Home() {
             setTradingStatus('ERROR: Deriv returned a session limit for an unexpected account. Trading has been disarmed.');
             return;
           }
-          setSignalTradingSettings((current) => ({
-            ...current,
-            sessionProfit: selectedAccountIdRef.current === account.accountId
+          stopAtSessionLimit(
+            'Take-profit or stop-loss reached. Auto-scan and trading are stopped; reset the session to resume.',
+            selectedAccountIdRef.current === account.accountId
               && typeof record.sessionProfit === 'number'
               && Number.isFinite(record.sessionProfit)
               ? record.sessionProfit
-              : current.sessionProfit,
-            armed: false,
-          }));
-          armedAccountIdRef.current = null;
-          setTradingStatus('Take-profit or stop-loss reached. Auto-trading is stopped; reset the session to resume.');
+              : undefined,
+          );
           return;
         }
         if (record.tradePlaced === true) {
@@ -793,14 +805,23 @@ function Home() {
         signalTradingSettings.stopLoss,
       );
       if (selectedAccountIdRef.current === account.accountId) {
-        setSignalTradingSettings((current) => ({
-          ...current,
-          sessionProfit,
-          armed: limitReached ? false : current.armed,
-        }));
+        if (limitReached) {
+          stopAtSessionLimit(
+            'Take-profit or stop-loss reached. Auto-scan and trading are stopped; reset the session to resume.',
+            sessionProfit,
+          );
+        } else {
+          setSignalTradingSettings((current) => ({
+            ...current,
+            sessionProfit,
+          }));
+        }
+      }
+      if (limitReached && selectedAccountIdRef.current !== account.accountId) {
+        stopAtSessionLimit('Take-profit or stop-loss reached. Auto-scan and trading are stopped; reset the session to resume.');
       }
       setTradingStatus(
-        `${account.accountType.toUpperCase()} ${account.accountId} · ${signalQuality.toUpperCase()} · ${prediction.signalLabel} · stake ${stakeUsed} ${account.currency} · ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} ${account.currency} · contract ${contractId}${limitReached ? ' · SESSION LIMIT REACHED, AUTO-TRADING DISARMED' : ''}`,
+        `${account.accountType.toUpperCase()} ${account.accountId} · ${signalQuality.toUpperCase()} · ${prediction.signalLabel} · stake ${stakeUsed} ${account.currency} · ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} ${account.currency} · contract ${contractId}${limitReached ? ' · SESSION LIMIT REACHED, AUTO-SCAN STOPPED' : ''}`,
       );
       recordActivity(
         profit >= 0 ? 'Signal trade won' : 'Signal trade lost',
@@ -884,8 +905,8 @@ function Home() {
     setAppPreferences((current) => ({ ...current, autoScan: true }));
     setTradingScanRequestId((current) => current + 1);
     setTradingStatus(scannerFeedStatus === 'live'
-      ? `Trading started on the selected ${account.accountType} account. Starting a fresh scan now; its signal will be submitted automatically.`
-      : `Trading started on the selected ${account.accountType} account. Waiting for the scanner feed; scanning and trade submission will start automatically when it connects.`);
+      ? `Trading started on selected ${account.accountType} account ${account.accountId}. Starting a fresh scan now; signals will be submitted to this account until a session limit is reached.`
+      : `Trading started on selected ${account.accountType} account ${account.accountId}. Waiting for the scanner feed; signals will be submitted to this account until a session limit is reached.`);
   };
 
   const clearTradingValues = () => {
@@ -1009,7 +1030,7 @@ function Home() {
 
       const accounts = parseDerivAccountBalances(result);
       setDerivAccounts(accounts);
-      setSelectedDerivAccount((accounts.find((account) => account.accountType === 'real') ?? accounts[0])?.accountId ?? '');
+      setSelectedDerivAccount(getDefaultDerivAccountId(accounts));
       setApiTokenDialogOpen(false);
       setDerivConnected(true);
       setNotice(accounts.length > 0
@@ -1796,6 +1817,9 @@ function Home() {
                       </span>
                       <span className="mt-0.5 block whitespace-nowrap font-mono-ui text-[12px] font-extrabold tabular-nums text-[#f0f7f5]" data-testid="text-deriv-balance">
                         {new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(selectedAccount.balance)} {selectedAccount.currency || 'units'}
+                      </span>
+                      <span className="mt-0.5 block truncate font-mono-ui text-[8px] text-[#91aaa7]" data-testid="text-deriv-account-id">
+                        {selectedAccount.accountId}
                       </span>
                     </span>
                     <ChevronDown size={15} className="ml-1 shrink-0 text-[#9bbdb7] transition-transform group-data-[state=open]:rotate-180" />

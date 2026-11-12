@@ -7,6 +7,10 @@ export type DerivAccountBalance = {
   currency: string;
 };
 
+export function getDefaultDerivAccountId(accounts: readonly DerivAccountBalance[]): string {
+  return accounts[0]?.accountId ?? '';
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
