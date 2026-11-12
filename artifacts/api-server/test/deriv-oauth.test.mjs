@@ -4,6 +4,8 @@ import { once } from "node:events";
 import test, { after } from "node:test";
 
 process.env.NODE_ENV = "test";
+process.env.DERIV_APP_ID = "34VWBd5pBISkAMEF3Zxm7";
+process.env.DERIV_REDIRECT_URI = "https://pulsefactor.space/oauth/callback";
 
 const { default: app } = await import("../dist/index.mjs");
 const server = app.listen(0, "127.0.0.1");

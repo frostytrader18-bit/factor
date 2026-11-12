@@ -2,8 +2,16 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import { logger } from "../lib/logger";
 
-const APP_ID = "34VWBd5pBISkAMEF3Zxm7";
-const CALLBACK_URL = "https://pulsefactor.space/oauth/callback";
+function requiredEnv(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`${name} environment variable is required.`);
+  }
+  return value;
+}
+
+const APP_ID = requiredEnv("DERIV_APP_ID");
+const CALLBACK_URL = requiredEnv("DERIV_REDIRECT_URI");
 const AUTHORIZATION_URL = "https://auth.deriv.com/oauth2/auth";
 const TOKEN_URL = "https://auth.deriv.com/oauth2/token";
 const STATE_COOKIE = "pulsefactor_deriv_oauth";
