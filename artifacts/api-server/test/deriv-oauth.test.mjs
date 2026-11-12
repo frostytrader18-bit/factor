@@ -107,7 +107,7 @@ test("Deriv login uses PKCE and exchanges the callback code server-side", async 
     assert.equal(session.status, 200);
     assert.deepEqual(await session.json(), {
       authenticated: true,
-      accounts: [{ accountType: "demo", balance: 123.45, currency: "USD" }],
+      accounts: [{ accountId: "CR12345", accountType: "demo", balance: 123.45, currency: "USD" }],
     });
     assert.equal(accountsRequest?.url.href, "https://api.derivws.com/trading/v1/options/accounts");
     assert.equal(accountsRequest?.headers?.Authorization, "Bearer test-deriv-access-token");
@@ -163,7 +163,7 @@ test("Deriv API-token login validates tokens and stores valid credentials in an 
     assert.equal(connected.status, 200);
     assert.deepEqual(await connected.json(), {
       authenticated: true,
-      accounts: [{ accountType: "demo", balance: 123.45, currency: "USD" }],
+      accounts: [{ accountId: "CR12345", accountType: "demo", balance: 123.45, currency: "USD" }],
     });
     assert.equal(connected.headers.get("cache-control"), "no-store");
     const cookie = connected.headers.getSetCookie()
@@ -180,7 +180,7 @@ test("Deriv API-token login validates tokens and stores valid credentials in an 
     assert.equal(session.status, 200);
     assert.deepEqual(await session.json(), {
       authenticated: true,
-      accounts: [{ accountType: "demo", balance: 123.45, currency: "USD" }],
+      accounts: [{ accountId: "CR12345", accountType: "demo", balance: 123.45, currency: "USD" }],
     });
     assert.equal(requests.length, 3);
     assert.equal(requests[0].url.href, "https://api.derivws.com/trading/v1/options/accounts");
@@ -210,7 +210,7 @@ test("Deriv account parser accepts the accounts wrapper returned by API gateways
     return new Response(JSON.stringify({
       data: {
         accounts: [
-          { balance: 98.76, currency: "", status: "active", account_type: "real" },
+          { account_id: "CR67890", balance: 98.76, currency: "", status: "active", account_type: "real" },
         ],
       },
     }), {
@@ -228,7 +228,45 @@ test("Deriv account parser accepts the accounts wrapper returned by API gateways
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
       authenticated: true,
-      accounts: [{ accountType: "real", balance: 98.76, currency: "" }],
+      accounts: [{ accountId: "CR67890", accountType: "real", balance: 98.76, currency: "" }],
+    });
+  } finally {
+    globalThis.fetch = nativeFetch;
+  }
+});
+
+test("Deriv accounts response keeps active demo and real balances and ignores other rows", async () => {
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin !== "https://api.derivws.com") return nativeFetch(input, init);
+    return new Response(JSON.stringify({
+      data: [
+        { account_id: "CR-DEMO", account_type: "demo", balance: 10000, currency: "USD", group: "row", status: "active" },
+        { account_id: "CR-REAL", account_type: "real", balance: 250.5, currency: "EUR", group: "row", status: "active" },
+        { account_id: "CR-INACTIVE", account_type: "real", balance: 0, currency: "USD", group: "row", status: "inactive" },
+        null,
+      ],
+      meta: { endpoint: "/trading/v1/options/accounts", method: "GET", timing: 20 },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    const response = await nativeFetch(`${baseUrl}/api/oauth/deriv/token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: "multi-account-token" }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      authenticated: true,
+      accounts: [
+        { accountId: "CR-DEMO", accountType: "demo", balance: 10000, currency: "USD" },
+        { accountId: "CR-REAL", accountType: "real", balance: 250.5, currency: "EUR" },
+      ],
     });
   } finally {
     globalThis.fetch = nativeFetch;

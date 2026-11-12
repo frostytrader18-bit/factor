@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { ActivityLogView, type ActivityRecord } from './components/analysis/ActivityLogView';
 import { DERIV_SIGNUP_URL } from '@/lib/deriv-oauth';
+import { parseDerivAccountBalances, type DerivAccountBalance, type DerivAccountType } from '@/lib/deriv-accounts';
 import {
   MarketScannerDashboard,
 } from './components/analysis/MarketScannerDashboard';
@@ -110,42 +111,6 @@ function playTone(context: AudioContext, alert: ScannerSoundAlert) {
 }
 
 type WorkspaceTheme = 'arctic' | 'nebula' | 'solar' | 'biolume' | 'lunar';
-type DerivAccountBalance = {
-  accountType: 'demo' | 'real';
-  balance: number;
-  currency: string;
-};
-
-function parseDerivAccountBalances(value: unknown): DerivAccountBalance[] {
-  if (!value || typeof value !== 'object' || !('accounts' in value) || !Array.isArray(value.accounts)) {
-    throw new Error('Deriv account response did not contain balances.');
-  }
-
-  return value.accounts.map((account) => {
-    if (
-      !account
-      || typeof account !== 'object'
-      || !('accountType' in account)
-      || (account.accountType !== 'demo' && account.accountType !== 'real')
-      || !('balance' in account)
-      || typeof account.balance !== 'number'
-      || !Number.isFinite(account.balance)
-      || account.balance < 0
-      || !('currency' in account)
-      || typeof account.currency !== 'string'
-      || !/^[A-Za-z0-9]{2,20}$/.test(account.currency)
-    ) {
-      throw new Error('Deriv account response contained an invalid balance.');
-    }
-
-    return {
-      accountType: account.accountType,
-      balance: account.balance,
-      currency: account.currency,
-    };
-  });
-}
-
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
@@ -280,7 +245,7 @@ function Home() {
   const [notice, setNotice] = useState('');
   const [derivConnected, setDerivConnected] = useState(false);
   const [derivAccounts, setDerivAccounts] = useState<DerivAccountBalance[]>([]);
-  const [selectedDerivAccount, setSelectedDerivAccount] = useState(0);
+  const [selectedDerivAccount, setSelectedDerivAccount] = useState('');
   const [apiTokenDialogOpen, setApiTokenDialogOpen] = useState(false);
   const [apiTokenInput, setApiTokenInput] = useState('');
   const [apiTokenError, setApiTokenError] = useState('');
@@ -360,8 +325,11 @@ function Home() {
         const accounts = parseDerivAccountBalances(result);
         if (active) {
           setDerivAccounts(accounts);
-          setSelectedDerivAccount((current) => Math.min(current, Math.max(accounts.length - 1, 0)));
+          setSelectedDerivAccount((current) => accounts.some((account) => account.accountId === current)
+            ? current
+            : (accounts.find((account) => account.accountType === 'demo') ?? accounts[0])?.accountId ?? '');
           setDerivConnected(true);
+          if (accounts.length === 0) setNotice('No active Deriv trading accounts were found.');
         }
       })
       .catch((error: unknown) => {
@@ -683,10 +651,12 @@ function Home() {
 
       const accounts = parseDerivAccountBalances(result);
       setDerivAccounts(accounts);
-      setSelectedDerivAccount(0);
+      setSelectedDerivAccount((accounts.find((account) => account.accountType === 'demo') ?? accounts[0])?.accountId ?? '');
       setApiTokenDialogOpen(false);
       setDerivConnected(true);
-      setNotice('Connected to Deriv with an API token.');
+      setNotice(accounts.length > 0
+        ? 'Connected to Deriv with an API token.'
+        : 'Connected to Deriv, but no active trading accounts were found.');
     } catch (error) {
       console.error('Unable to verify the Deriv API token.', error);
       setApiTokenError('Could not reach the server to verify your token. Try again shortly.');
@@ -1386,7 +1356,11 @@ function Home() {
   const recentPredictionOutcomes = [...predictionOutcomes]
     .sort((left, right) => right.startedAt - left.startedAt)
     .slice(0, 8);
-  const selectedAccount = derivAccounts[selectedDerivAccount];
+  const selectedAccount = derivAccounts.find((account) => account.accountId === selectedDerivAccount);
+  const selectedAccountType: DerivAccountType | null = selectedAccount?.accountType ?? null;
+  const selectedTypeAccounts = selectedAccountType
+    ? derivAccounts.filter((account) => account.accountType === selectedAccountType)
+    : [];
   return (
     <main className="dashboard-backdrop min-h-[100dvh] px-3 pb-8 pt-3 text-[#dce6ef] sm:px-3 sm:pt-4">
       <div className="mx-auto max-w-[1440px]">
@@ -1427,22 +1401,48 @@ function Home() {
             )}
             {derivConnected && selectedAccount && (
               <div data-testid="status-deriv-balance" className="flex h-9 items-center gap-2 rounded-lg border border-[#24766f]/55 bg-[#0d302d]/75 px-2.5">
-                {derivAccounts.length > 1 ? (
+                <div role="group" aria-label="Deriv account mode" className="flex h-6 items-center rounded-md bg-[#071d1d] p-0.5">
+                  {(['demo', 'real'] as const).map((accountType) => {
+                    const account = derivAccounts.find((item) => item.accountType === accountType);
+                    return (
+                      <button
+                        key={accountType}
+                        type="button"
+                        disabled={!account}
+                        aria-pressed={selectedAccount.accountType === accountType}
+                        data-testid={`button-deriv-account-${accountType}`}
+                        onClick={() => {
+                          if (account) setSelectedDerivAccount(account.accountId);
+                        }}
+                        className={`h-5 rounded px-2 font-mono-ui text-[8px] font-bold transition ${
+                          selectedAccount.accountType === accountType
+                            ? accountType === 'real'
+                              ? 'bg-[#6b3b22] text-[#ffd098]'
+                              : 'bg-[#176044] text-[#a3f2c8]'
+                            : account
+                              ? 'text-[#87a39d] hover:text-white'
+                              : 'cursor-not-allowed text-[#42514f]'
+                        }`}
+                      >
+                        {accountType.toUpperCase()}
+                      </button>
+                    );
+                  })}
+                </div>
+                {selectedTypeAccounts.length > 1 && (
                   <select
-                    aria-label="Deriv trading account"
+                    aria-label={`${selectedAccount.accountType} Deriv account`}
                     data-testid="select-deriv-account"
                     value={selectedDerivAccount}
-                    onChange={(event) => setSelectedDerivAccount(Number(event.target.value))}
+                    onChange={(event) => setSelectedDerivAccount(event.target.value)}
                     className="max-w-24 bg-transparent font-mono-ui text-[8px] font-bold text-[#87d9cb] outline-none"
                   >
-                    {derivAccounts.map((account, index) => (
-                      <option key={`${account.accountType}-${account.currency}-${index}`} value={index} className="bg-[#07141f]">
-                        {account.accountType.toUpperCase()} {account.currency}
+                    {selectedTypeAccounts.map((account) => (
+                      <option key={account.accountId} value={account.accountId} className="bg-[#07141f]">
+                        {account.currency || 'Account'}
                       </option>
                     ))}
                   </select>
-                ) : (
-                  <span className="font-mono-ui text-[8px] font-bold text-[#87d9cb]">{selectedAccount.accountType.toUpperCase()}</span>
                 )}
                 <span className="font-mono-ui text-[10px] font-bold text-[#e2f4e9]" data-testid="text-deriv-balance">
                   {new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(selectedAccount.balance)} {selectedAccount.currency || 'units'}

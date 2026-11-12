@@ -64,18 +64,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 type DerivAccountBalance = {
+  accountId: string;
   accountType: "demo" | "real";
   balance: number;
   currency: string;
 };
 
-function getAccountRows(payload: unknown): unknown[] | null {
-  if (!isRecord(payload)) return null;
-  const data = payload["data"];
-  if (Array.isArray(data)) return data;
-  if (isRecord(data) && Array.isArray(data["accounts"])) return data["accounts"];
-  if (Array.isArray(payload["accounts"])) return payload["accounts"];
-  return null;
+function getAccountRows(payload: unknown, depth = 0): unknown[] | null {
+  if (Array.isArray(payload)) return payload;
+  if (!isRecord(payload) || depth >= 3) return null;
+  return getAccountRows(payload["data"] ?? payload["accounts"], depth + 1);
 }
 
 function parseAccountBalances(payload: unknown): DerivAccountBalance[] | null {
@@ -84,22 +82,34 @@ function parseAccountBalances(payload: unknown): DerivAccountBalance[] | null {
 
   const accounts: DerivAccountBalance[] = [];
   for (const account of rows) {
-    if (!isRecord(account)) return null;
-    if (account["status"] !== "active") continue;
-    const accountType = account["account_type"];
-    const balance = account["balance"];
+    if (!isRecord(account)) continue;
+    if (account["status"] === "inactive") continue;
+    if (account["status"] !== undefined && account["status"] !== "active") continue;
+    const accountId = account["account_id"] ?? account["accountId"];
+    const accountType = account["account_type"] ?? account["accountType"];
+    const rawBalance = account["balance"];
+    const balance = typeof rawBalance === "number"
+      ? rawBalance
+      : typeof rawBalance === "string" && rawBalance.trim() !== ""
+        ? Number(rawBalance)
+        : Number.NaN;
     const currency = account["currency"];
     if (
-      (accountType !== "demo" && accountType !== "real")
-      || typeof balance !== "number"
+      typeof accountId !== "string"
+      || accountId.length === 0
+      || accountId.length > 64
+      || (accountType !== "demo" && accountType !== "real")
       || !Number.isFinite(balance)
       || balance < 0
       || typeof currency !== "string"
       || currency.length > 20
     ) {
-      return null;
+      continue;
     }
-    accounts.push({ accountType, balance, currency });
+    accounts.push({ accountId, accountType, balance, currency });
+  }
+  if (rows.length > 0 && accounts.length === 0) {
+    return null;
   }
   return accounts;
 }
