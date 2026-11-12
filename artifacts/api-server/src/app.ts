@@ -1,4 +1,5 @@
 import express, { type Express } from "express";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import cors from "cors";
 import pinoHttp from "pino-http";
@@ -10,7 +11,14 @@ import { logger } from "./lib/logger";
 const app: Express = express();
 const publicDir = fileURLToPath(new URL("./public/", import.meta.url));
 const appIndexPath = path.join(publicDir, "index.html");
+const appIndexHtml = readFileSync(appIndexPath, "utf8");
+const appScriptAsset = appIndexHtml.match(/\/assets\/index-[^"]+\.js/)?.[0];
+const appStylesheetAsset = appIndexHtml.match(/\/assets\/index-[^"]+\.css/)?.[0];
 const contentSecurityPolicy = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; script-src 'self'; connect-src 'self' wss://api.derivws.com https://api.derivws.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+
+if (!appScriptAsset || !appStylesheetAsset) {
+  throw new Error("The built app entry assets could not be found in index.html.");
+}
 
 app.set("trust proxy", process.env.NODE_ENV === "production" ? 1 : false);
 app.use((req, res, next) => {
@@ -71,6 +79,14 @@ app.use(express.static(publicDir, {
     res.setHeader("Content-Security-Policy", contentSecurityPolicy);
   },
 }));
+
+app.get(/^\/assets\/index-[\w-]+\.(?:js|css)$/, (req, res) => {
+  const currentAsset = path.extname(req.path) === ".js"
+    ? appScriptAsset
+    : appStylesheetAsset;
+  res.setHeader("Cache-Control", "no-store");
+  res.redirect(307, currentAsset);
+});
 
 app.use((req, res, next) => {
   if (req.path === "/api" || req.path.startsWith("/api/")) {

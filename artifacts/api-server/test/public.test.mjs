@@ -79,6 +79,21 @@ test("app page and assets are publicly available without a login", async () => {
   assert.equal(asset.status, 200);
   assert.match(asset.headers.get("content-type") ?? "", /javascript/);
   const bundle = await asset.text();
+  for (const [staleAsset, currentAsset, contentType] of [
+    ["/assets/index-from-old-deployment.js", appScript, /javascript/],
+    ["/assets/index-from-old-deployment.css", html.match(/href="(\/assets\/index-[^"]+\.css)"/)?.[1], /text\/css/],
+  ]) {
+    assert.ok(currentAsset);
+    const staleResponse = await fetch(`${baseUrl}${staleAsset}`, { redirect: "manual" });
+    assert.equal(staleResponse.status, 307);
+    assert.equal(staleResponse.headers.get("location"), currentAsset);
+    assert.equal(staleResponse.headers.get("cache-control"), "no-store");
+
+    const recoveredAsset = await fetch(`${baseUrl}${staleAsset}`);
+    assert.equal(recoveredAsset.status, 200);
+    assert.match(recoveredAsset.headers.get("content-type") ?? "", contentType);
+  }
+
   assert.match(bundle, /PULSE-FACTOR/);
   assert.match(bundle, /\/icons\/pulsefactor-192\.png/);
   assert.match(bundle, /https:\/\/pulsefactor\.space\//);
