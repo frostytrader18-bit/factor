@@ -328,21 +328,21 @@ export function MarketScannerDashboard({
           </label>
           <label className="space-y-1">
             <span className="block font-mono-ui text-[8px] font-bold tracking-wider text-[#83b6b3]">TRADE DURATION</span>
-            <select
+            <input
+              type="number"
+              min="1"
+              max="10"
+              step="1"
               value={tradingSettings.durationTicks}
               onChange={(event) => updateTradingSetting('durationTicks', Number(event.currentTarget.value))}
               disabled={tradingSettings.armed || tradingBusy}
-              data-testid="select-trading-duration"
+              data-testid="input-trading-duration"
               aria-label="Trade duration in ticks"
+              placeholder="Enter ticks (1–10)"
               className={tradingNumberClass}
-            >
-              {Array.from({ length: 10 }, (_, index) => {
-                const ticks = index + 1;
-                return <option key={ticks} value={ticks}>{ticks} {ticks === 1 ? 'tick' : 'ticks'}</option>;
-              })}
-            </select>
+            />
             <span className="block text-[8px] leading-relaxed text-[#82979f]">
-              1 tick closes at the next tick; 2 ticks enters on tick 1 and closes on tick 2.
+              Enter 1–10 ticks. For 2 ticks, tick 1 opens and tick 2 closes the trade.
             </span>
           </label>
           <label className="space-y-1">
