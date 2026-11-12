@@ -209,6 +209,7 @@ test("signal trades use the selected real or demo account and keep independent a
   const nativeFetch = globalThis.fetch;
   const nativeWebSocket = globalThis.WebSocket;
   const websocketRequests = [];
+  const purchaseRequests = [];
   const accounts = [
     { account_id: "CR-DEMO-54321", balance: 500, currency: "USD", status: "active", account_type: "demo" },
     { account_id: "CR-REAL-54321", balance: 500, currency: "USD", status: "active", account_type: "real" },
@@ -216,6 +217,25 @@ test("signal trades use the selected real or demo account and keep independent a
   globalThis.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.origin === "https://api.derivws.com") {
+      if (url.pathname.endsWith("/contracts/bulk-purchase/demo")
+        || url.pathname.endsWith("/contracts/bulk-purchase/real")) {
+        const purchase = JSON.parse(init.body);
+        purchaseRequests.push({ url, headers: init.headers, body: purchase });
+        const accountId = purchase.accounts[0].account_id;
+        return new Response(JSON.stringify({
+          data: {
+            transactions: [{
+              account_id: accountId,
+              contract_id: `contract-${accountId}`,
+              buy_price: purchase.contract_parameters.amount,
+              transaction_id: 12345,
+            }],
+          },
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       return new Response(JSON.stringify({
         data: accounts,
       }), {
@@ -230,51 +250,69 @@ test("signal trades use the selected real or demo account and keep independent a
     constructor(url) {
       super();
       this.url = url;
-      setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+      this.readyState = MockDerivWebSocket.CONNECTING;
+      this.expiryEpoch = 0;
+      this.expectedDigit = 7;
+      setTimeout(() => {
+        this.readyState = MockDerivWebSocket.OPEN;
+        this.dispatchEvent(new Event("open"));
+      }, 0);
     }
 
     send(serializedRequest) {
       const request = JSON.parse(serializedRequest);
       websocketRequests.push(request);
       let response;
-      if (request.authorize) {
+      if (request.proposal) {
+        this.expectedDigit = request.duration === 2 ? 2 : 7;
+        this.expiryEpoch = Math.floor(Date.now() / 1000) + 10;
         response = {
           req_id: request.req_id,
-          authorize: { account_list: accounts.map((account) => ({ loginid: account.account_id })) },
-        };
-      } else if (request.switch_account) {
-        response = {
-          req_id: request.req_id,
-          switch_account: { loginid: request.loginid },
-        };
-      } else if (request.proposal) {
-        response = {
-          req_id: request.req_id,
-          proposal: { id: `proposal-${request.req_id}`, ask_price: request.amount },
-        };
-      } else if (request.buy) {
-        response = {
-          req_id: request.req_id,
-          buy: { contract_id: `contract-${request.req_id}` },
-        };
-      } else {
-        response = {
-          req_id: request.req_id,
-          msg_type: "proposal_open_contract",
-          proposal_open_contract: {
-            contract_id: "contract-4",
-            is_sold: 1,
-            profit: 2,
+          proposal: {
+            ask_price: request.amount,
+            payout: request.amount + 2,
+            date_expiry: this.expiryEpoch,
           },
         };
+      } else if (request.ticks) {
+        response = {
+          req_id: request.req_id,
+          msg_type: "tick",
+          tick: {
+            symbol: request.ticks,
+            epoch: Math.floor(Date.now() / 1000),
+            quote: 540.72,
+            pip_size: 2,
+          },
+        };
+        setTimeout(() => {
+          this.dispatchEvent(new MessageEvent("message", {
+            data: JSON.stringify({
+              msg_type: "tick",
+              tick: {
+                symbol: request.ticks,
+                epoch: this.expiryEpoch,
+                quote: this.expectedDigit === 2 ? 540.72 : 540.77,
+                pip_size: 2,
+              },
+            }),
+          }));
+        }, 20);
+      } else {
+        throw new Error(`Unexpected Deriv public socket request: ${JSON.stringify(request)}`);
       }
       queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", {
         data: JSON.stringify(response),
       })));
     }
 
-    close() {}
+    close() {
+      this.readyState = MockDerivWebSocket.CLOSED;
+    }
   }
+  MockDerivWebSocket.CONNECTING = 0;
+  MockDerivWebSocket.OPEN = 1;
+  MockDerivWebSocket.CLOSED = 3;
   globalThis.WebSocket = MockDerivWebSocket;
 
   try {
@@ -303,21 +341,35 @@ test("signal trades use the selected real or demo account and keep independent a
         }),
       });
       assert.equal(response.status, 200);
+      const expectedProfit = accountId === "CR-DEMO-54321" ? 2 : -1;
       assert.deepEqual(await response.json(), {
-        contractId: "contract-4",
-        profit: 2,
+        contractId: `contract-${accountId}`,
+        profit: expectedProfit,
         accountId,
         stake: 1,
         nextStake: 1,
-        sessionProfit: 2,
+        sessionProfit: expectedProfit,
         sessionStopped: false,
       });
-      assert.ok(websocketRequests.some((request) => request.switch_account === 1 && request.loginid === accountId));
+      const durationTicks = accountId === "CR-DEMO-54321" ? 1 : 2;
       const proposalRequest = websocketRequests.find((request) => (
-        request.proposal === 1 && request.duration === (accountId === "CR-DEMO-54321" ? 1 : 2)
+        request.proposal === 1 && request.duration === durationTicks
       ));
       assert.ok(proposalRequest);
       assert.equal(proposalRequest.duration_unit, "t");
+      assert.equal(proposalRequest.underlying_symbol, "R_100");
+      assert.equal(proposalRequest.symbol, undefined);
+      const purchase = purchaseRequests.find((request) => (
+        request.url.pathname.endsWith(`/bulk-purchase/${accountId === "CR-DEMO-54321" ? "demo" : "real"}`)
+      ));
+      assert.ok(purchase);
+      assert.equal(purchase.headers["Deriv-App-ID"], "34VWBd5pBISkAMEF3Zxm7");
+      assert.deepEqual(purchase.body.accounts, [{
+        token: "test-access-token",
+        account_id: accountId,
+      }]);
+      assert.equal(purchase.body.contract_parameters.duration, durationTicks);
+      assert.equal(purchase.body.contract_parameters.underlying_symbol, "R_100");
 
       const session = await nativeFetch(
         `${baseUrl}/api/oauth/deriv/trading/session?accountId=${accountId}`,
@@ -326,7 +378,7 @@ test("signal trades use the selected real or demo account and keep independent a
       assert.equal(session.status, 200);
       assert.deepEqual(await session.json(), {
         accountId,
-        sessionProfit: 2,
+        sessionProfit: expectedProfit,
         sessionStopped: false,
       });
     }

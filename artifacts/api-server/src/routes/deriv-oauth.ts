@@ -227,16 +227,116 @@ function getDerivContractParameters(trade: SignalTradeRequest, currency: string)
             ? "DIGITEVEN"
             : "DIGITODD";
   return {
-    proposal: 1,
     amount: trade.stake,
     basis: "stake",
     contract_type: contractType,
     currency,
     duration: trade.durationTicks,
     duration_unit: "t",
-    symbol: trade.marketSymbol,
+    underlying_symbol: trade.marketSymbol,
     ...(trade.digit === null ? {} : { barrier: String(trade.digit) }),
   };
+}
+
+type MarketTick = {
+  symbol: string;
+  epoch: number;
+  quote: number;
+  pipSize: number;
+};
+
+function parseMarketTick(value: unknown): MarketTick | null {
+  if (!isRecord(value)) return null;
+  const { symbol, epoch, quote, pip_size: pipSize } = value;
+  if (
+    typeof symbol !== "string"
+    || !Number.isInteger(epoch)
+    || typeof quote !== "number" || !Number.isFinite(quote)
+    || !Number.isInteger(pipSize) || Number(pipSize) < 0 || Number(pipSize) > 10
+  ) {
+    return null;
+  }
+  return {
+    symbol,
+    epoch: Number(epoch),
+    quote,
+    pipSize: Number(pipSize),
+  };
+}
+
+function getLastDigit(tick: MarketTick): number {
+  const fixedQuote = tick.quote.toFixed(tick.pipSize);
+  return Number(fixedQuote.replace(".", "").at(-1));
+}
+
+function didContractWin(trade: SignalTradeRequest, tick: MarketTick): boolean {
+  const lastDigit = getLastDigit(tick);
+  switch (trade.contractType) {
+    case "match-digit":
+      return lastDigit === trade.digit;
+    case "differ":
+      return lastDigit !== trade.digit;
+    case "over":
+      return lastDigit > (trade.digit ?? -1);
+    case "under":
+      return lastDigit < (trade.digit ?? 10);
+    case "even-odd":
+      return trade.signalKey === "even" ? lastDigit % 2 === 0 : lastDigit % 2 === 1;
+  }
+}
+
+function waitForTickSettlement(
+  socket: WebSocket,
+  trade: SignalTradeRequest,
+  expiryEpoch: number,
+  payout: number,
+  buyPrice: number,
+  bufferedTicks: MarketTick[],
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.removeEventListener("message", onMessage);
+      socket.removeEventListener("error", onError);
+      socket.removeEventListener("close", onClose);
+    };
+    const finish = (tick: MarketTick) => {
+      cleanup();
+      resolve(didContractWin(trade, tick) ? payout - buyPrice : -buyPrice);
+    };
+    const inspect = (tick: MarketTick) => {
+      if (tick.symbol === trade.marketSymbol && tick.epoch >= expiryEpoch) {
+        finish(tick);
+        return true;
+      }
+      return false;
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("The trade was placed, but Deriv's live feed did not confirm its expiry tick."));
+    }, 60_000);
+    const onMessage = (event: MessageEvent) => {
+      const message = decodeSocketMessage(event);
+      const tick = message && message["msg_type"] === "tick"
+        ? parseMarketTick(message["tick"])
+        : null;
+      if (tick) inspect(tick);
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("The trade was placed, but the live feed disconnected before its expiry tick."));
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("The trade was placed, but the live feed closed before its expiry tick."));
+    };
+    for (const tick of bufferedTicks) {
+      if (inspect(tick)) return;
+    }
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("error", onError, { once: true });
+    socket.addEventListener("close", onClose, { once: true });
+  });
 }
 
 function decodeSocketMessage(event: MessageEvent): Record<string, unknown> | null {
@@ -307,129 +407,156 @@ function sendDerivRequest(
   });
 }
 
-function waitForContractSettlement(
-  socket: WebSocket,
-  reqId: number,
-  contractId: string | number,
-): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let subscriptionAccepted = false;
-    const cleanup = () => {
-      clearTimeout(timeout);
-      socket.removeEventListener("message", onMessage);
-      socket.removeEventListener("error", onError);
-    };
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error("The trade was placed, but Deriv did not confirm its settlement in time."));
-    }, 30_000);
-    const onMessage = (event: MessageEvent) => {
-      const message = decodeSocketMessage(event);
-      if (!message) return;
-      if (message["req_id"] === reqId) {
-        if (isRecord(message["error"])) {
-          cleanup();
-          reject(new Error("The trade was placed, but Deriv could not provide its result."));
-          return;
-        }
-        subscriptionAccepted = true;
-      }
-      if (message["msg_type"] !== "proposal_open_contract"
-        || !isRecord(message["proposal_open_contract"])) return;
-      const contract = message["proposal_open_contract"];
-      if (String(contract["contract_id"]) !== String(contractId)) return;
-      if (contract["is_sold"] === 1 || contract["is_sold"] === true) {
-        cleanup();
-        resolve(contract);
-      } else if (subscriptionAccepted && message["error"]) {
-        cleanup();
-        reject(new Error("The trade was placed, but Deriv could not provide its result."));
-      }
-    };
-    const onError = () => {
-      cleanup();
-      reject(new Error("The trade was placed, but the result connection was interrupted."));
-    };
-    socket.addEventListener("message", onMessage);
-    socket.addEventListener("error", onError, { once: true });
-    socket.send(JSON.stringify({
-      proposal_open_contract: 1,
-      contract_id: contractId,
-      subscribe: 1,
-      req_id: reqId,
-    }));
-  });
-}
-
 async function executeSignalTrade(
   accessToken: string,
   account: DerivAccountBalance,
   trade: SignalTradeRequest,
 ): Promise<{ contractId: string; profit: number }> {
-  const socket = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(APP_ID)}`);
+  const socket = new WebSocket("wss://api.derivws.com/trading/v1/options/ws/public");
   let tradePlaced = false;
+  const bufferedTicks: MarketTick[] = [];
+  const bufferMarketTicks = (event: MessageEvent) => {
+    const message = decodeSocketMessage(event);
+    const tick = message && message["msg_type"] === "tick"
+      ? parseMarketTick(message["tick"])
+      : null;
+    if (tick?.symbol === trade.marketSymbol) {
+      bufferedTicks.push(tick);
+    }
+  };
+  socket.addEventListener("message", bufferMarketTicks);
   try {
     await waitForSocketOpen(socket);
-    const authorized = await sendDerivRequest(socket, 1, { authorize: accessToken });
-    if (!isRecord(authorized["authorize"])) {
-      throw new Error("Deriv did not confirm account authorization.");
-    }
-    const accounts = authorized["authorize"]["account_list"];
-    if (Array.isArray(accounts) && !accounts.some((item) => (
-      isRecord(item) && item["loginid"] === account.accountId
-    ))) {
-      throw new Error("The selected Deriv account is not authorized for this session.");
-    }
-
-    const switched = await sendDerivRequest(socket, 2, {
-      switch_account: 1,
-      loginid: account.accountId,
+    const contractParameters = getDerivContractParameters(trade, account.currency);
+    const proposalMessage = await sendDerivRequest(socket, 1, {
+      proposal: 1,
+      ...contractParameters,
     });
-    if (
-      !isRecord(switched["switch_account"])
-      || switched["switch_account"]["loginid"] !== account.accountId
-    ) {
-      throw new Error("Deriv could not select the chosen account.");
-    }
-
-    const proposalMessage = await sendDerivRequest(
-      socket,
-      3,
-      getDerivContractParameters(trade, account.currency),
-    );
     if (!isRecord(proposalMessage["proposal"])) {
       throw new Error("Deriv did not return a valid contract quote.");
     }
     const proposal = proposalMessage["proposal"];
-    const proposalId = proposal["id"];
     const askPrice = proposal["ask_price"];
+    const payout = proposal["payout"];
+    const expiryEpoch = proposal["date_expiry"];
     if (
-      (typeof proposalId !== "string" && typeof proposalId !== "number")
-      || typeof askPrice !== "number" || !Number.isFinite(askPrice)
+      typeof askPrice !== "number" || !Number.isFinite(askPrice)
       || askPrice <= 0 || askPrice > trade.stake
+      || typeof payout !== "number" || !Number.isFinite(payout) || payout < askPrice
+      || !Number.isInteger(expiryEpoch) || Number(expiryEpoch) <= Math.floor(Date.now() / 1000)
     ) {
-      throw new Error("Deriv returned a quote that exceeds the configured stake.");
+      throw new Error("Deriv returned an invalid quote or expiry for the configured stake and duration.");
     }
 
-    const buyMessage = await sendDerivRequest(socket, 4, {
-      buy: proposalId,
-      price: trade.stake,
+    const tickSubscription = await sendDerivRequest(socket, 2, {
+      ticks: trade.marketSymbol,
+      subscribe: 1,
     });
-    if (!isRecord(buyMessage["buy"])) {
-      throw new Error("Deriv did not confirm the contract purchase.");
+    if (!parseMarketTick(tickSubscription["tick"])) {
+      throw new Error("Deriv did not start the live market feed needed to confirm trade expiry.");
     }
-    const bought = buyMessage["buy"];
-    const contractId = bought["contract_id"];
-    if (typeof contractId !== "string" && typeof contractId !== "number") {
-      throw new Error("Deriv confirmed the purchase without a contract ID.");
+
+    let purchaseResponse: globalThis.Response;
+    try {
+      purchaseResponse = await fetch(
+        `https://api.derivws.com/trading/v1/options/contracts/bulk-purchase/${account.accountType}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Deriv-App-ID": APP_ID,
+          },
+          body: JSON.stringify({
+            contract_parameters: contractParameters,
+            accounts: [{ token: accessToken, account_id: account.accountId }],
+          }),
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+    } catch (error) {
+      throw Object.assign(
+        new Error("Deriv order submission could not be confirmed. Check account transactions before re-arming."),
+        { tradePlaced: true, cause: error },
+      );
+    }
+
+    let purchasePayload: unknown;
+    try {
+      purchasePayload = await purchaseResponse.json();
+    } catch (error) {
+      if (purchaseResponse.ok || purchaseResponse.status >= 500) {
+        throw Object.assign(
+          new Error("Deriv's purchase response was incomplete. Check account transactions before re-arming."),
+          { tradePlaced: true, cause: error },
+        );
+      }
+      throw new Error(`Deriv rejected the purchase request with HTTP ${purchaseResponse.status}.`);
+    }
+    if (!purchaseResponse.ok) {
+      const errorMessage = isRecord(purchasePayload)
+        && Array.isArray(purchasePayload["errors"])
+        && isRecord(purchasePayload["errors"][0])
+        && typeof purchasePayload["errors"][0]["message"] === "string"
+        ? purchasePayload["errors"][0]["message"]
+        : `HTTP ${purchaseResponse.status}`;
+      if (purchaseResponse.status >= 500) {
+        throw Object.assign(
+          new Error(`Deriv purchase status is uncertain (${errorMessage}). Check account transactions before re-arming.`),
+          { tradePlaced: true },
+        );
+      }
+      throw new Error(`Deriv rejected the purchase request: ${errorMessage}`);
+    }
+
+    const transactions = isRecord(purchasePayload)
+      && isRecord(purchasePayload["data"])
+      && Array.isArray(purchasePayload["data"]["transactions"])
+      ? purchasePayload["data"]["transactions"]
+      : null;
+    if (!transactions) {
+      throw Object.assign(
+        new Error("Deriv returned an incomplete purchase result. Check account transactions before re-arming."),
+        { tradePlaced: true },
+      );
+    }
+    const transaction = transactions.find((item) => (
+      isRecord(item) && item["account_id"] === account.accountId
+    ));
+    if (!isRecord(transaction)) {
+      throw Object.assign(
+        new Error("Deriv did not confirm the selected account's purchase. Check account transactions before re-arming."),
+        { tradePlaced: true },
+      );
+    }
+    if (isRecord(transaction["error"])) {
+      const message = transaction["error"]["message"];
+      throw new Error(typeof message === "string"
+        ? `Deriv rejected the purchase: ${message}`
+        : "Deriv rejected the purchase for the selected account.");
+    }
+
+    const contractId = transaction["contract_id"];
+    const buyPrice = transaction["buy_price"];
+    if (
+      (typeof contractId !== "string" && typeof contractId !== "number")
+      || typeof buyPrice !== "number" || !Number.isFinite(buyPrice)
+      || buyPrice <= 0 || buyPrice > trade.stake
+    ) {
+      throw Object.assign(
+        new Error("Deriv returned an invalid purchase receipt. Check account transactions before re-arming."),
+        { tradePlaced: true },
+      );
     }
     tradePlaced = true;
 
-    const settlement = await waitForContractSettlement(socket, 5, contractId);
-    const profit = settlement["profit"];
-    if (typeof profit !== "number" || !Number.isFinite(profit)) {
-      throw new Error("Deriv settled the trade without a valid profit result.");
-    }
+    const profit = await waitForTickSettlement(
+      socket,
+      trade,
+      Number(expiryEpoch),
+      payout,
+      buyPrice,
+      bufferedTicks,
+    );
     return { contractId: String(contractId), profit };
   } catch (error) {
     if (tradePlaced) {
@@ -440,6 +567,7 @@ async function executeSignalTrade(
     }
     throw error;
   } finally {
+    socket.removeEventListener("message", bufferMarketTicks);
     if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
       socket.close();
     }

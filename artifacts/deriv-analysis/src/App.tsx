@@ -2333,14 +2333,14 @@ function Home() {
         <section id="connection-log" className="mt-5 scroll-mt-4">
           <section className="analysis-card card-log rounded-xl border border-[#30404c] bg-[#101b24]/90 p-3 sm:p-4">
             <button type="button" onClick={() => setLogExpanded((value) => !value)} aria-expanded={logExpanded} data-testid="button-toggle-status-log" className="flex w-full items-center justify-between text-left">
-              <span className="flex items-center gap-2"><span className="grid h-7 w-7 place-items-center rounded-md bg-[#173034] text-[#56d5cc]"><Cpu size={14} /></span><span><span className="block text-[11px] font-extrabold tracking-[.1em] text-[#e4e9e7]">CONNECTION &amp; LOG</span><span className="mt-0.5 block font-mono-ui text-[8px] tracking-wider text-[#789099]">PUBLIC TICK FEED · NO ACCOUNT LINK</span></span></span>
+              <span className="flex items-center gap-2"><span className="grid h-7 w-7 place-items-center rounded-md bg-[#173034] text-[#56d5cc]"><Cpu size={14} /></span><span><span className="block text-[11px] font-extrabold tracking-[.1em] text-[#e4e9e7]">CONNECTION &amp; LOG</span><span className="mt-0.5 block font-mono-ui text-[8px] tracking-wider text-[#789099]">PUBLIC TICK FEED · ACCOUNT-BASED EXECUTION</span></span></span>
               <ChevronDown size={15} className={`text-[#82939a] transition-transform ${logExpanded ? 'rotate-180' : ''}`} />
             </button>
             {logExpanded && <div className="mt-3 space-y-2 border-t border-[#273842] pt-3 rise-in">
               <div data-testid="status-connection-preview" className="flex items-center justify-between gap-2 rounded-md bg-[#0c171d] px-2.5 py-2"><span className="flex items-center gap-2 text-[10px] text-[#a5b4bb]"><Wifi size={13} className="text-[#4dcbb9]" /> Deriv WebSocket</span><span className={`flex items-center gap-1 font-mono-ui text-[8px] ${feedStatus === 'live' ? 'text-[#6de4dc]' : 'text-[#dbb65a]'}`}><span className={`h-1.5 w-1.5 rounded-full ${feedStatus === 'live' ? 'bg-[#42d8d2]' : 'bg-[#d6ad51]'}`} /> {feedStatusLabel}</span></div>
               <div className="flex items-center justify-between gap-2 rounded-md bg-[#0c171d] px-2.5 py-2"><span className="flex items-center gap-2 text-[10px] text-[#a5b4bb]"><Signal size={13} className="text-[#58b8dc]" /> Bot synchronization</span><span className="font-mono-ui text-[8px] tracking-wider text-[#8a9aa1]">NOT CONNECTED</span></div>
               <div className="flex items-start gap-2 rounded-md border border-[#273842] bg-[#0c171d] px-2.5 py-2.5"><span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#43cdc2]" /><div className="min-w-0"><p data-testid="text-latest-log" className="truncate text-[10px] text-[#b8c8ce]">{lastAction}</p><p className="mt-1 font-mono-ui text-[8px] tracking-wider text-[#637780]">LOCAL UI EVENT · PUBLIC MARKET FEED</p></div><span className="ml-auto shrink-0 font-mono-ui text-[8px] text-[#62767d]">NOW</span></div>
-              <p className="flex items-start gap-1.5 px-1 pt-0.5 text-[9px] leading-relaxed text-[#7d8f98]"><AlertTriangle size={11} className="mt-0.5 shrink-0 text-[#c4a754]" /> {feedError ?? (feedStatus === 'live' ? `Receiving live ${market.label} ticks. No trading account is connected.` : 'Connecting to the public Deriv tick feed. No trading account is connected.')}</p>
+              <p className="flex items-start gap-1.5 px-1 pt-0.5 text-[9px] leading-relaxed text-[#7d8f98]"><AlertTriangle size={11} className="mt-0.5 shrink-0 text-[#c4a754]" /> {feedError ?? (feedStatus === 'live' ? `Receiving live ${market.label} ticks. Connect a Deriv account and arm signal trading to place trades.` : 'Connecting to the public Deriv tick feed. Connect a Deriv account and arm signal trading to place trades.')}</p>
               <div className="flex items-center gap-1.5 border-t border-[#273842] px-1 pt-2 font-mono-ui text-[9px] text-[#7d8f98]">
                 <span>Powered by</span>
                 <a href="https://pulsefactor.space/" target="_blank" rel="noopener noreferrer" className="rounded px-1 py-0.5 font-bold tracking-wider text-[#71e2d6] transition hover:bg-[#103334] hover:text-[#a0fff0] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#71e2d6]">
@@ -2350,7 +2350,7 @@ function Home() {
             </div>}
           </section>
         </section>
-        <p className="mx-auto mt-3 max-w-4xl text-center font-mono-ui text-[8px] leading-relaxed tracking-[.08em] text-[#566872]">DERIV MARKET ANALYSIS CONSOLE <span className="mx-1 text-[#a98b4d]">/</span> PUBLIC LIVE DATA <span className="mx-1 text-[#a98b4d]">/</span> TRADING DISABLED</p>
+        <p className="mx-auto mt-3 max-w-4xl text-center font-mono-ui text-[8px] leading-relaxed tracking-[.08em] text-[#566872]">DERIV MARKET ANALYSIS CONSOLE <span className="mx-1 text-[#a98b4d]">/</span> PUBLIC LIVE DATA <span className="mx-1 text-[#a98b4d]">/</span> SIGNAL TRADING REQUIRES A LINKED ACCOUNT AND EXPLICIT ARMING</p>
         </DashboardView>
       </div>
     </main>

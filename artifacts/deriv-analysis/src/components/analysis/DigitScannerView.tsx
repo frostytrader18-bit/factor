@@ -576,7 +576,7 @@ export function DigitScannerView({
                 {displayedPrediction
                   ? edgeValidated
                     ? 'Validated'
-                    : 'Unconfirmed · watch only'
+                    : 'Unvalidated'
                     : scanResults
                       ? scanResults.length > 0
                         ? `${new Set(rankedMarkets.map(({ symbol }) => symbol)).size} markets analyzed`
