@@ -17,6 +17,7 @@ import {
   AlertTriangle,
   BarChart3,
   Bell,
+  Check,
   ChevronDown,
   CircleHelp,
   Cpu,
@@ -35,7 +36,13 @@ import {
 } from 'lucide-react';
 import { ActivityLogView, type ActivityRecord } from './components/analysis/ActivityLogView';
 import { DERIV_SIGNUP_URL } from '@/lib/deriv-oauth';
-import { parseDerivAccountBalances, type DerivAccountBalance, type DerivAccountType } from '@/lib/deriv-accounts';
+import { parseDerivAccountBalances, type DerivAccountBalance } from '@/lib/deriv-accounts';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
   MarketScannerDashboard,
 } from './components/analysis/MarketScannerDashboard';
@@ -327,7 +334,7 @@ function Home() {
           setDerivAccounts(accounts);
           setSelectedDerivAccount((current) => accounts.some((account) => account.accountId === current)
             ? current
-            : (accounts.find((account) => account.accountType === 'demo') ?? accounts[0])?.accountId ?? '');
+            : (accounts.find((account) => account.accountType === 'real') ?? accounts[0])?.accountId ?? '');
           setDerivConnected(true);
           if (accounts.length === 0) setNotice('No active Deriv trading accounts were found.');
         }
@@ -651,7 +658,7 @@ function Home() {
 
       const accounts = parseDerivAccountBalances(result);
       setDerivAccounts(accounts);
-      setSelectedDerivAccount((accounts.find((account) => account.accountType === 'demo') ?? accounts[0])?.accountId ?? '');
+      setSelectedDerivAccount((accounts.find((account) => account.accountType === 'real') ?? accounts[0])?.accountId ?? '');
       setApiTokenDialogOpen(false);
       setDerivConnected(true);
       setNotice(accounts.length > 0
@@ -1372,10 +1379,6 @@ function Home() {
     .sort((left, right) => right.startedAt - left.startedAt)
     .slice(0, 8);
   const selectedAccount = derivAccounts.find((account) => account.accountId === selectedDerivAccount);
-  const selectedAccountType: DerivAccountType | null = selectedAccount?.accountType ?? null;
-  const selectedTypeAccounts = selectedAccountType
-    ? derivAccounts.filter((account) => account.accountType === selectedAccountType)
-    : [];
   return (
     <main className="dashboard-backdrop min-h-[100dvh] px-3 pb-8 pt-3 text-[#dce6ef] sm:px-3 sm:pt-4">
       <div className="mx-auto max-w-[1440px]">
@@ -1387,54 +1390,96 @@ function Home() {
               <p className="mt-1 font-mono-ui text-[8px] tracking-[.12em] text-[#7f929e]">LIVE MARKET ANALYSIS</p>
             </div>
             {derivConnected && selectedAccount && (
-              <div data-testid="status-deriv-balance" className="flex h-9 items-center gap-2 rounded-lg border border-[#24766f]/55 bg-[#0d302d]/75 px-2.5">
-                <div role="group" aria-label="Deriv account mode" className="flex h-6 items-center rounded-md bg-[#071d1d] p-0.5">
-                  {(['demo', 'real'] as const).map((accountType) => {
-                    const account = derivAccounts.find((item) => item.accountType === accountType);
-                    return (
-                      <button
-                        key={accountType}
-                        type="button"
-                        disabled={!account}
-                        aria-pressed={selectedAccount.accountType === accountType}
-                        data-testid={`button-deriv-account-${accountType}`}
-                        onClick={() => {
-                          if (account) setSelectedDerivAccount(account.accountId);
-                        }}
-                        className={`h-5 rounded px-2 font-mono-ui text-[8px] font-bold transition ${
-                          selectedAccount.accountType === accountType
-                            ? accountType === 'real'
-                              ? 'bg-[#6b3b22] text-[#ffd098]'
-                              : 'bg-[#176044] text-[#a3f2c8]'
-                            : account
-                              ? 'text-[#87a39d] hover:text-white'
-                              : 'cursor-not-allowed text-[#42514f]'
-                        }`}
-                      >
-                        {accountType.toUpperCase()}
-                      </button>
-                    );
-                  })}
-                </div>
-                {selectedTypeAccounts.length > 1 && (
-                  <select
-                    aria-label={`${selectedAccount.accountType} Deriv account`}
-                    data-testid="select-deriv-account"
-                    value={selectedDerivAccount}
-                    onChange={(event) => setSelectedDerivAccount(event.target.value)}
-                    className="max-w-24 bg-transparent font-mono-ui text-[8px] font-bold text-[#87d9cb] outline-none"
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Choose Deriv account"
+                    data-account-selector="true"
+                    data-testid="status-deriv-balance"
+                    className="group relative flex min-h-12 items-center gap-3 overflow-hidden rounded-xl border border-[#25877e]/60 bg-[linear-gradient(120deg,rgba(10,44,47,.96),rgba(10,25,37,.96))] px-3 py-1.5 text-left shadow-[0_0_22px_rgba(27,203,177,.08)] transition hover:border-[#54d8c6] hover:shadow-[0_0_26px_rgba(27,203,177,.18)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#54d8c6]/70"
                   >
-                    {selectedTypeAccounts.map((account) => (
-                      <option key={account.accountId} value={account.accountId} className="bg-[#07141f]">
-                        {account.currency || 'Account'}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                <span className="font-mono-ui text-[10px] font-bold text-[#e2f4e9]" data-testid="text-deriv-balance">
-                  {new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(selectedAccount.balance)} {selectedAccount.currency || 'units'}
-                </span>
-              </div>
+                    <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg border ${
+                      selectedAccount.accountType === 'real'
+                        ? 'border-[#f3c866]/45 bg-[#59431d]/45 text-[#f4d583]'
+                        : 'border-[#55d9bf]/40 bg-[#124a3c]/55 text-[#80efcb]'
+                    }`}>
+                      <span className="h-2 w-2 rounded-full bg-current shadow-[0_0_10px_currentColor]" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className={`block truncate font-mono-ui text-[9px] font-bold tracking-[.12em] ${
+                        selectedAccount.accountType === 'real' ? 'text-[#f4d583]' : 'text-[#8ce9ca]'
+                      }`}>
+                        {selectedAccount.accountType === 'real' ? 'REAL ACCOUNT' : 'DEMO ACCOUNT'}
+                      </span>
+                      <span className="mt-0.5 block whitespace-nowrap font-mono-ui text-[12px] font-extrabold tabular-nums text-[#f0f7f5]" data-testid="text-deriv-balance">
+                        {new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(selectedAccount.balance)} {selectedAccount.currency || 'units'}
+                      </span>
+                    </span>
+                    <ChevronDown size={15} className="ml-1 shrink-0 text-[#9bbdb7] transition-transform group-data-[state=open]:rotate-180" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="start"
+                  sideOffset={8}
+                  className="w-[min(19rem,calc(100vw-2rem))] rounded-2xl border border-[#2b6567] bg-[#091820]/[.98] p-2 text-[#e8f4f1] shadow-[0_18px_60px_rgba(0,0,0,.62),0_0_28px_rgba(36,196,177,.12)] backdrop-blur-xl"
+                >
+                  <div className="px-2 pb-2 pt-1">
+                    <p className="font-mono-ui text-[8px] font-bold tracking-[.2em] text-[#6f9998]">SWITCH ACCOUNT</p>
+                    <p className="mt-1 text-[10px] text-[#8fa7a9]">Choose a balance to view</p>
+                  </div>
+                  <div className="space-y-1">
+                    {derivAccounts.map((account) => {
+                      const isSelected = account.accountId === selectedDerivAccount;
+                      const isReal = account.accountType === 'real';
+                      return (
+                        <DropdownMenuItem
+                          key={account.accountId}
+                          onSelect={() => setSelectedDerivAccount(account.accountId)}
+                          data-testid={`option-deriv-account-${account.accountType}`}
+                          aria-current={isSelected ? 'true' : undefined}
+                          className={`flex cursor-pointer items-center justify-between gap-3 rounded-xl border px-3 py-3 transition focus:bg-[#143236] focus:text-white ${
+                            isSelected
+                              ? 'border-[#267b74]/70 bg-[#103130]/80'
+                              : 'border-transparent bg-[#101f28]/65 hover:border-[#28474d] hover:bg-[#122a32]'
+                          }`}
+                        >
+                          <span className="flex min-w-0 items-center gap-3">
+                            <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg border ${
+                              isReal
+                                ? 'border-[#e8bd59]/35 bg-[#473719]/45 text-[#f3d37e]'
+                                : 'border-[#55d9bf]/35 bg-[#104537]/50 text-[#83e6c6]'
+                            }`}>
+                              <span className="h-2 w-2 rounded-full bg-current shadow-[0_0_10px_currentColor]" />
+                            </span>
+                            <span className="min-w-0">
+                              <span className={`block font-mono-ui text-[9px] font-bold tracking-[.1em] ${
+                                isReal ? 'text-[#f1d17a]' : 'text-[#85e4c4]'
+                              }`}>
+                                {isReal ? 'REAL ACCOUNT' : 'DEMO ACCOUNT'}
+                              </span>
+                              <span className="mt-1 block truncate text-[9px] text-[#779096]">
+                                {account.accountId}
+                              </span>
+                            </span>
+                          </span>
+                          <span className="flex shrink-0 items-center gap-2">
+                            <span className="text-right">
+                              <span className="block font-mono-ui text-[11px] font-bold tabular-nums text-[#edf5f2]">
+                                {new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(account.balance)}
+                              </span>
+                              <span className="mt-0.5 block font-mono-ui text-[8px] font-bold tracking-wider text-[#81999b]">
+                                {account.currency || 'UNITS'}
+                              </span>
+                            </span>
+                            {isSelected && <Check size={15} className="text-[#63dfc2]" />}
+                          </span>
+                        </DropdownMenuItem>
+                      );
+                    })}
+                  </div>
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
           </div>
           <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
