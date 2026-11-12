@@ -1383,13 +1383,47 @@ function Home() {
     <main className="dashboard-backdrop min-h-[100dvh] px-3 pb-8 pt-3 text-[#dce6ef] sm:px-3 sm:pt-4">
       <div className="mx-auto max-w-[1440px]">
         <header className="topbar mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-[#263441] pb-3 sm:mb-6 sm:pb-4">
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <div className="order-1 flex min-w-0 flex-wrap items-center gap-3 sm:order-1">
             <img src="/icons/pulsefactor-192.png" alt="" className="h-12 w-12 shrink-0 rounded-xl border border-[#d6ad51]/50 object-cover shadow-[0_0_18px_rgba(177,70,255,.25)]" />
             <div>
               <span className="font-display text-[18px] font-bold leading-none tracking-[.08em] text-[#f2f0e9] sm:text-[22px]">PULSE-FACTOR</span>
               <p className="mt-1 font-mono-ui text-[8px] tracking-[.12em] text-[#7f929e]">LIVE MARKET ANALYSIS</p>
             </div>
-            {derivConnected && selectedAccount && (
+          </div>
+          <div className="order-2 ml-auto flex w-full flex-col items-end gap-2 sm:order-3 sm:w-auto sm:flex-row sm:items-center">
+            <div className="order-1 flex w-full flex-wrap items-center justify-end gap-2 sm:order-2 sm:w-auto">
+              {!isAppInstalled && (
+                <button type="button" onClick={installApp} data-testid="button-install-app" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#1c7778]/60 bg-[#103334]/70 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#71e2d6] transition hover:border-[#54d8d6] hover:bg-[#164348] sm:px-3">
+                  <Download size={13} /> INSTALL APP
+                </button>
+              )}
+              <div data-testid="status-market-feed" aria-live="polite" className="preview-badge flex items-center gap-2 rounded-full border border-[#1d7577]/55 bg-[#0d3338]/50 px-3 py-1.5">
+                <span className={`pulse-dot h-1.5 w-1.5 rounded-full ${feedStatus === 'live' ? 'bg-[#42d8d2]' : feedStatus === 'error' ? 'bg-[#ef4444]' : 'bg-[#d6ad51]'}`} />
+                <span className="font-mono-ui text-[10px] tracking-[.12em] text-[#6de4dc]">{feedStatusLabel}</span>
+              </div>
+              <button type="button" onClick={() => { void toggleSoundAlerts(); }} aria-label={soundAlertsEnabled ? 'Disable sound alerts' : 'Enable sound alerts'} aria-pressed={soundAlertsEnabled} title={soundAlertsEnabled ? 'Sound alerts on' : 'Sound alerts off'} data-testid="button-notifications" className={`grid h-9 w-9 place-items-center rounded-lg border transition ${soundAlertsEnabled ? 'border-[#1c9a7a] bg-[#10382f] text-[#67e8b5]' : 'border-[#263441] bg-[#101a22] text-[#a5b2bc] hover:border-[#447985] hover:text-[#54d8d6]'}`}>
+                <Bell size={16} />
+              </button>
+              <button type="button" onClick={() => { setSettingsDraft(settings); setSettingsOpen(true); }} aria-label="Settings" data-testid="button-settings" className="grid h-9 w-9 place-items-center rounded-lg border border-[#263441] bg-[#101a22] text-[#a5b2bc] transition hover:border-[#447985] hover:text-[#54d8d6]">
+                <Settings2 size={16} />
+              </button>
+            </div>
+            {!derivConnected && (
+              <div className="order-2 flex w-full flex-wrap items-center justify-end gap-2 sm:order-1 sm:w-auto">
+                <a href="/api/oauth/deriv/login" data-testid="button-deriv-login" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#7651bc]/70 bg-[#261b3d]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#d5b9ff] transition hover:border-[#ad7cff] hover:bg-[#352255] sm:px-3">
+                  <LogIn size={13} /> DERIV LOGIN
+                </a>
+                <button type="button" onClick={() => { setApiTokenError(''); setApiTokenDialogOpen(true); }} data-testid="button-api-token-login" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#276e79]/70 bg-[#102c35]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#9be7ef] transition hover:border-[#54d8d6] hover:bg-[#164348] sm:px-3">
+                  <KeyRound size={13} /> API TOKEN
+                </button>
+                <a href={DERIV_SIGNUP_URL} target="_blank" rel="noopener noreferrer" data-testid="button-deriv-signup" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#d6ad51]/60 bg-[#342918]/75 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#f3d982] transition hover:border-[#ffdc72] hover:bg-[#4a381d] sm:px-3">
+                  <UserPlus size={13} /> SIGN UP
+                </a>
+              </div>
+            )}
+          </div>
+          {derivConnected && selectedAccount && (
+            <div className="order-3 flex w-full justify-start sm:order-2 sm:w-auto">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
@@ -1480,40 +1514,8 @@ function Home() {
                   </div>
                 </DropdownMenuContent>
               </DropdownMenu>
-            )}
-          </div>
-          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-            {!derivConnected && (
-              <a href="/api/oauth/deriv/login" data-testid="button-deriv-login" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#7651bc]/70 bg-[#261b3d]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#d5b9ff] transition hover:border-[#ad7cff] hover:bg-[#352255] sm:px-3">
-                <LogIn size={13} /> DERIV LOGIN
-              </a>
-            )}
-            {!derivConnected && (
-              <>
-                <button type="button" onClick={() => { setApiTokenError(''); setApiTokenDialogOpen(true); }} data-testid="button-api-token-login" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#276e79]/70 bg-[#102c35]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#9be7ef] transition hover:border-[#54d8d6] hover:bg-[#164348] sm:px-3">
-                  <KeyRound size={13} /> API TOKEN
-                </button>
-                <a href={DERIV_SIGNUP_URL} target="_blank" rel="noopener noreferrer" data-testid="button-deriv-signup" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#d6ad51]/60 bg-[#342918]/75 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#f3d982] transition hover:border-[#ffdc72] hover:bg-[#4a381d] sm:px-3">
-                  <UserPlus size={13} /> SIGN UP
-                </a>
-              </>
-            )}
-            {!isAppInstalled && (
-              <button type="button" onClick={installApp} data-testid="button-install-app" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#1c7778]/60 bg-[#103334]/70 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#71e2d6] transition hover:border-[#54d8d6] hover:bg-[#164348] sm:px-3">
-                <Download size={13} /> INSTALL APP
-              </button>
-            )}
-            <div data-testid="status-market-feed" aria-live="polite" className="preview-badge flex items-center gap-2 rounded-full border border-[#1d7577]/55 bg-[#0d3338]/50 px-3 py-1.5">
-              <span className={`pulse-dot h-1.5 w-1.5 rounded-full ${feedStatus === 'live' ? 'bg-[#42d8d2]' : feedStatus === 'error' ? 'bg-[#ef4444]' : 'bg-[#d6ad51]'}`} />
-              <span className="font-mono-ui text-[10px] tracking-[.12em] text-[#6de4dc]">{feedStatusLabel}</span>
             </div>
-            <button type="button" onClick={() => { void toggleSoundAlerts(); }} aria-label={soundAlertsEnabled ? 'Disable sound alerts' : 'Enable sound alerts'} aria-pressed={soundAlertsEnabled} title={soundAlertsEnabled ? 'Sound alerts on' : 'Sound alerts off'} data-testid="button-notifications" className={`grid h-9 w-9 place-items-center rounded-lg border transition ${soundAlertsEnabled ? 'border-[#1c9a7a] bg-[#10382f] text-[#67e8b5]' : 'border-[#263441] bg-[#101a22] text-[#a5b2bc] hover:border-[#447985] hover:text-[#54d8d6]'}`}>
-              <Bell size={16} />
-            </button>
-            <button type="button" onClick={() => { setSettingsDraft(settings); setSettingsOpen(true); }} aria-label="Settings" data-testid="button-settings" className="grid h-9 w-9 place-items-center rounded-lg border border-[#263441] bg-[#101a22] text-[#a5b2bc] transition hover:border-[#447985] hover:text-[#54d8d6]">
-              <Settings2 size={16} />
-            </button>
-          </div>
+          )}
         </header>
 
         <nav className="section-nav mb-4 flex items-center gap-2 border-b border-[#263441] pb-2 sm:mb-5" aria-label="Main navigation">
