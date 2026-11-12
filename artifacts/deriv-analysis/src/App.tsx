@@ -1301,6 +1301,21 @@ function Home() {
     recordActivity('Live feed reconnecting', `Reconnecting to ${market.label}.`);
   };
 
+  const disconnectDeriv = async () => {
+    try {
+      const response = await fetch('/api/oauth/deriv/session', { method: 'DELETE' });
+      if (!response.ok) throw new Error(`Deriv logout failed with HTTP ${response.status}.`);
+      setDerivConnected(false);
+      setDerivAccounts([]);
+      setSelectedDerivAccount('');
+      setSettingsOpen(false);
+      setNotice('Disconnected from Deriv.');
+    } catch (error) {
+      console.error('Unable to clear the Deriv session.', error);
+      setNotice('Deriv could not be disconnected. Please try again.');
+    }
+  };
+
   const saveSettings = () => {
     try {
       localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settingsDraft));
@@ -1365,40 +1380,12 @@ function Home() {
     <main className="dashboard-backdrop min-h-[100dvh] px-3 pb-8 pt-3 text-[#dce6ef] sm:px-3 sm:pt-4">
       <div className="mx-auto max-w-[1440px]">
         <header className="topbar mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-[#263441] pb-3 sm:mb-6 sm:pb-4">
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
             <img src="/icons/pulsefactor-192.png" alt="" className="h-12 w-12 shrink-0 rounded-xl border border-[#d6ad51]/50 object-cover shadow-[0_0_18px_rgba(177,70,255,.25)]" />
             <div>
               <span className="font-display text-[18px] font-bold leading-none tracking-[.08em] text-[#f2f0e9] sm:text-[22px]">PULSE-FACTOR</span>
               <p className="mt-1 font-mono-ui text-[8px] tracking-[.12em] text-[#7f929e]">LIVE MARKET ANALYSIS</p>
             </div>
-          </div>
-          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-            {derivConnected ? (
-              <button
-                type="button"
-                onClick={() => {
-                  void fetch('/api/oauth/deriv/session', { method: 'DELETE' })
-                    .then((response) => {
-                      if (!response.ok) throw new Error(`Deriv logout failed with HTTP ${response.status}.`);
-                      setDerivConnected(false);
-                      setDerivAccounts([]);
-                      setNotice('Disconnected from Deriv.');
-                    })
-                    .catch((error: unknown) => {
-                      console.error('Unable to clear the Deriv session.', error);
-                      setNotice('Deriv could not be disconnected. Please try again.');
-                    });
-                }}
-                data-testid="button-deriv-login"
-                className="flex h-9 items-center gap-1.5 rounded-lg border border-[#7651bc]/70 bg-[#261b3d]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#d5b9ff] transition hover:border-[#ad7cff] hover:bg-[#352255] sm:px-3"
-              >
-                <LogIn size={13} /> DERIV CONNECTED
-              </button>
-            ) : (
-              <a href="/api/oauth/deriv/login" data-testid="button-deriv-login" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#7651bc]/70 bg-[#261b3d]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#d5b9ff] transition hover:border-[#ad7cff] hover:bg-[#352255] sm:px-3">
-                <LogIn size={13} /> DERIV LOGIN
-              </a>
-            )}
             {derivConnected && selectedAccount && (
               <div data-testid="status-deriv-balance" className="flex h-9 items-center gap-2 rounded-lg border border-[#24766f]/55 bg-[#0d302d]/75 px-2.5">
                 <div role="group" aria-label="Deriv account mode" className="flex h-6 items-center rounded-md bg-[#071d1d] p-0.5">
@@ -1448,6 +1435,22 @@ function Home() {
                   {new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(selectedAccount.balance)} {selectedAccount.currency || 'units'}
                 </span>
               </div>
+            )}
+          </div>
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            {derivConnected ? (
+              <button
+                type="button"
+                onClick={() => { setSettingsDraft(settings); setSettingsOpen(true); }}
+                data-testid="button-deriv-login"
+                className="flex h-9 items-center gap-1.5 rounded-lg border border-[#7651bc]/70 bg-[#261b3d]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#d5b9ff] transition hover:border-[#ad7cff] hover:bg-[#352255] sm:px-3"
+              >
+                <LogIn size={13} /> DERIV CONNECTED
+              </button>
+            ) : (
+              <a href="/api/oauth/deriv/login" data-testid="button-deriv-login" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#7651bc]/70 bg-[#261b3d]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#d5b9ff] transition hover:border-[#ad7cff] hover:bg-[#352255] sm:px-3">
+                <LogIn size={13} /> DERIV LOGIN
+              </a>
             )}
             {!derivConnected && (
               <>
@@ -1554,6 +1557,22 @@ function Home() {
             </DialogHeader>
 
             <div className="space-y-5">
+              {derivConnected && (
+                <section className="flex items-center justify-between gap-3 rounded-lg border border-[#7651bc]/40 bg-[#261b3d]/40 p-3">
+                  <div>
+                    <p className="font-mono-ui text-[10px] font-bold tracking-[.12em] text-[#d5b9ff]">DERIV ACCOUNT</p>
+                    <p className="mt-1 text-xs text-[#8fa4b2]">Connected. Your balance and account mode are shown in the header.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { void disconnectDeriv(); }}
+                    data-testid="button-deriv-logout"
+                    className="flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-[#8b3c48]/70 bg-[#3a1d28]/70 px-3 font-mono-ui text-[9px] font-bold tracking-wider text-[#ffb5bd] transition hover:border-[#d45d69] hover:bg-[#51242f]"
+                  >
+                    <LogIn size={13} className="rotate-180" /> LOG OUT
+                  </button>
+                </section>
+              )}
               <label className="block space-y-2">
                 <span className="block font-mono-ui text-[10px] font-bold tracking-[.12em] text-[#82dce5]">THEME</span>
                 <select
