@@ -270,9 +270,14 @@ function waitForContractSettlement(
       const contract = message["proposal_open_contract"];
       if (String(contract["contract_id"]) !== String(contractId)) return;
       if (contract["is_sold"] === 1 || contract["is_sold"] === true) {
-        const profit = contract["profit"];
+        const rawProfit = contract["profit"];
+        const profit = typeof rawProfit === "number"
+          ? rawProfit
+          : typeof rawProfit === "string" && rawProfit.trim() !== ""
+            ? Number(rawProfit)
+            : Number.NaN;
         cleanup();
-        if (typeof profit !== "number" || !Number.isFinite(profit)) {
+        if (!Number.isFinite(profit)) {
           reject(new Error("Deriv marked the trade settled but returned an invalid profit."));
           return;
         }

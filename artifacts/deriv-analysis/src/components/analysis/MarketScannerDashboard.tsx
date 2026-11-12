@@ -32,6 +32,7 @@ type ScannerSettings = {
 type MarketScannerDashboardProps = {
   markets: ScannedMarket[];
   autoScan: boolean;
+  tradingScanRequestId: number;
   feedStatus: FeedStatus;
   feedError: string | null;
   onMarketSelect: (symbol: string) => void;
@@ -127,6 +128,7 @@ function readScannerSettings(): ScannerSettings {
 export function MarketScannerDashboard({
   markets,
   autoScan,
+  tradingScanRequestId,
   feedStatus,
   feedError,
   onMarketSelect,
@@ -301,7 +303,7 @@ export function MarketScannerDashboard({
               : 'border-[#49606b] bg-[#182630] text-[#a3b3bc]'
           }`}>
             {tradingSettings.armed
-              ? `ARMED · ${selectedAccount?.accountType.toUpperCase() ?? 'ACCOUNT'}`
+              ? `TRADING · ${selectedAccount?.accountType.toUpperCase() ?? 'ACCOUNT'}`
               : 'DISARMED'}
           </span>
         </div>
@@ -510,8 +512,8 @@ export function MarketScannerDashboard({
           >
             {tradingSettings.armed ? <Square size={12} /> : <Play size={12} />}
             {tradingSettings.armed
-              ? 'DISARM AUTO-TRADING'
-              : `ARM ${selectedAccount ? `${selectedAccount.accountType.toUpperCase()} ` : ''}AUTO-TRADING`}
+              ? 'STOP TRADING'
+              : `START ${selectedAccount ? `${selectedAccount.accountType.toUpperCase()} ` : ''}TRADING`}
           </button>
           {selectedAccount && (
             <span className={`font-mono-ui text-[8px] font-bold tracking-wider ${
@@ -529,7 +531,7 @@ export function MarketScannerDashboard({
         >
           <AlertTriangle size={11} className="mt-0.5 shrink-0 text-[#d9ba78]" />
           {tradingStatus || (selectedAccount
-            ? `Trades will use the selected ${selectedAccount.accountType} account. Select your stake and session limits before arming.`
+            ? `Start trading to scan now and automatically submit the next signal to the selected ${selectedAccount.accountType} account.`
             : 'Connect a Deriv account and select a real or demo account to enable signal trading.')}
         </p>
       </section>
@@ -538,6 +540,8 @@ export function MarketScannerDashboard({
         markets={markets}
         contractType={settings.contractType}
         autoScan={autoScan}
+        tradingArmed={tradingSettings.armed}
+        tradingScanRequestId={tradingScanRequestId}
         configuration={settings.configuration}
         feedStatus={feedStatus}
         feedError={feedError}

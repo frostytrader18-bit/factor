@@ -40,6 +40,8 @@ type DigitScannerViewProps = {
   markets: ScannedMarket[];
   contractType: ContractType;
   autoScan: boolean;
+  tradingArmed: boolean;
+  tradingScanRequestId: number;
   feedStatus: FeedStatus;
   feedError: string | null;
   configuration: AnalysisEngineConfiguration;
@@ -75,6 +77,8 @@ export function DigitScannerView({
   markets,
   contractType,
   autoScan,
+  tradingArmed,
+  tradingScanRequestId,
   feedStatus,
   feedError,
   configuration,
@@ -92,6 +96,7 @@ export function DigitScannerView({
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const marketsRef = useRef(markets);
   const scanStartTickVersionsRef = useRef(new Map<string, number>());
+  const processedTradingScanRequestRef = useRef(0);
   const callbacksRef = useRef({ onMarketSelect, onPredictionStart, onSoundAlert });
   marketsRef.current = markets;
   callbacksRef.current = { onMarketSelect, onPredictionStart, onSoundAlert };
@@ -143,11 +148,43 @@ export function DigitScannerView({
     scanStartTickVersionsRef.current = new Map(
       marketsRef.current.map((market) => [market.symbol, market.tickVersion]),
     );
-    setScanMessage('Collecting 10 fresh ticks for 10s; the best available prediction will be submitted as soon as the scan completes when trading is armed.');
+    setScanMessage('Collecting 10 fresh ticks for 10s; the best available prediction will be submitted as soon as the scan completes while trading is running.');
     setScanPhase('collecting');
     setScanCountdownSeconds(SCANNER_COUNTDOWN_SECONDS);
     setIsAnalyzing(true);
   }, [feedStatus, isAnalyzing]);
+
+  useEffect(() => {
+    if (
+      tradingScanRequestId === 0
+      || tradingScanRequestId <= processedTradingScanRequestRef.current
+    ) {
+      return;
+    }
+    if (!tradingArmed) {
+      processedTradingScanRequestRef.current = tradingScanRequestId;
+      return;
+    }
+    if (
+      feedStatus !== 'live'
+      || readyMarkets === 0
+      || predictionIsActive
+      || isAnalyzing
+    ) {
+      return;
+    }
+
+    processedTradingScanRequestRef.current = tradingScanRequestId;
+    initiateManualScan();
+  }, [
+    feedStatus,
+    initiateManualScan,
+    isAnalyzing,
+    predictionIsActive,
+    readyMarkets,
+    tradingArmed,
+    tradingScanRequestId,
+  ]);
 
   useEffect(() => {
     if (!autoScan || feedStatus !== 'live' || readyMarkets === 0 || isAnalyzing || predictionIsActive) {
@@ -524,7 +561,7 @@ export function DigitScannerView({
                     </p>
                     <p className="mt-2 text-[9px] text-[#82939a]">
                       {scanPhase === 'collecting'
-                        ? `Collecting 10 fresh ticks across ${totalMarkets} markets; the signal is submitted immediately when the scan completes if trading is armed.`
+                        ? `Collecting 10 fresh ticks across ${totalMarkets} markets; the signal is submitted immediately when the scan completes if trading is running.`
                         : `Using the prior 100 ticks plus fresh ticks. Validated signals are submitted immediately; low-data candidates remain unconfirmed.`}
                     </p>
                     <div className="mx-auto mt-3 h-1.5 max-w-sm overflow-hidden rounded-full bg-[#1a2636]">

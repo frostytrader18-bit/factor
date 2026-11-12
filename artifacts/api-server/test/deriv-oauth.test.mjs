@@ -277,7 +277,7 @@ test("signal trades use the selected real or demo account and keep independent a
               proposal_open_contract: {
                 contract_id: `contract-${this.accountType}`,
                 is_sold: 1,
-                profit: this.accountType === "demo" ? 2 : -1,
+                profit: this.accountType === "demo" ? "2.00" : "-1.00",
               },
             }),
           }));

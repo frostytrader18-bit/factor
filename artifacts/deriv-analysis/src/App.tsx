@@ -300,6 +300,7 @@ function Home() {
   const [tradingSessionLoading, setTradingSessionLoading] = useState(false);
   const [tradingBusy, setTradingBusy] = useState(false);
   const [tradingStatus, setTradingStatus] = useState('');
+  const [tradingScanRequestId, setTradingScanRequestId] = useState(0);
   const activeTradeRef = useRef(false);
   const armedAccountIdRef = useRef<string | null>(null);
   const selectedAccountIdRef = useRef(selectedDerivAccount);
@@ -527,7 +528,7 @@ function Home() {
     if (!derivConnected || !account || account.accountId !== armedAccountIdRef.current) {
       armedAccountIdRef.current = null;
       setSignalTradingSettings((current) => ({ ...current, armed: false }));
-      setTradingStatus('Auto-trading disarmed because the selected Deriv account changed or disconnected.');
+      setTradingStatus('Trading stopped because the selected Deriv account changed or disconnected.');
     }
   }, [derivAccounts, derivConnected, selectedDerivAccount, signalTradingSettings.armed]);
 
@@ -841,20 +842,17 @@ function Home() {
     if (signalTradingSettings.armed) {
       armedAccountIdRef.current = null;
       setSignalTradingSettings((current) => ({ ...current, armed: false }));
-      setTradingStatus('Auto-trading disarmed. Any order already submitted will continue to settlement.');
+      setAppPreferences((current) => ({ ...current, autoScan: false }));
+      setTradingStatus('Trading stopped. Any order already submitted will continue to settlement.');
       return;
     }
     const account = derivAccounts.find((item) => item.accountId === selectedDerivAccount);
     if (!derivConnected || !account) {
-      setTradingStatus('ERROR: Select a connected Deriv account before arming auto-trading.');
+      setTradingStatus('ERROR: Select a connected Deriv account before starting trading.');
       return;
     }
     if (tradingSessionLoading || tradingSessionAccountId !== account.accountId) {
-      setTradingStatus('ERROR: Wait for the selected account trading session to be verified before arming.');
-      return;
-    }
-    if (scannerFeedStatus !== 'live') {
-      setTradingStatus('ERROR: Wait for the cross-market feed to be live before arming auto-trading.');
+      setTradingStatus('ERROR: Wait for the selected account trading session to be verified before starting.');
       return;
     }
     if (
@@ -868,7 +866,7 @@ function Home() {
       || !Number.isFinite(signalTradingSettings.stopLoss)
       || signalTradingSettings.stopLoss <= 0
     ) {
-      setTradingStatus('ERROR: Enter a valid stake, take-profit, and stop-loss amount before arming.');
+      setTradingStatus('ERROR: Enter a valid stake, take-profit, and stop-loss amount before starting.');
       return;
     }
     if (
@@ -883,7 +881,11 @@ function Home() {
     }
     armedAccountIdRef.current = account.accountId;
     setSignalTradingSettings((current) => ({ ...current, armed: true }));
-    setTradingStatus(`Auto-trading armed for the selected ${account.accountType} account. Scanner predictions will be traded as found, including unconfirmed signals.`);
+    setAppPreferences((current) => ({ ...current, autoScan: true }));
+    setTradingScanRequestId((current) => current + 1);
+    setTradingStatus(scannerFeedStatus === 'live'
+      ? `Trading started on the selected ${account.accountType} account. Starting a fresh scan now; its signal will be submitted automatically.`
+      : `Trading started on the selected ${account.accountType} account. Waiting for the scanner feed; scanning and trade submission will start automatically when it connects.`);
   };
 
   const clearTradingValues = () => {
@@ -895,7 +897,7 @@ function Home() {
       stopLoss: null,
       martingaleFactor: null,
     }));
-    setTradingStatus('Stake, limits, and multiplier factors cleared. Enter new values before arming auto-trading.');
+    setTradingStatus('Stake, limits, and multiplier factors cleared. Enter new values before starting trading.');
   };
 
   const resetTradingSession = () => {
@@ -2310,6 +2312,7 @@ function Home() {
               tickVersion: scannerTickVersionsByMarket[item.symbol] ?? 0,
             }))}
             autoScan={autoScan}
+            tradingScanRequestId={tradingScanRequestId}
             feedStatus={scannerFeedStatus}
             feedError={scannerFeedError}
             onMarketSelect={selectMarket}
@@ -2350,7 +2353,7 @@ function Home() {
             </div>}
           </section>
         </section>
-        <p className="mx-auto mt-3 max-w-4xl text-center font-mono-ui text-[8px] leading-relaxed tracking-[.08em] text-[#566872]">DERIV MARKET ANALYSIS CONSOLE <span className="mx-1 text-[#a98b4d]">/</span> PUBLIC LIVE DATA <span className="mx-1 text-[#a98b4d]">/</span> SIGNAL TRADING REQUIRES A LINKED ACCOUNT AND EXPLICIT ARMING</p>
+        <p className="mx-auto mt-3 max-w-4xl text-center font-mono-ui text-[8px] leading-relaxed tracking-[.08em] text-[#566872]">DERIV MARKET ANALYSIS CONSOLE <span className="mx-1 text-[#a98b4d]">/</span> PUBLIC LIVE DATA <span className="mx-1 text-[#a98b4d]">/</span> START TRADING TO SCAN AND SUBMIT THE NEXT SIGNAL</p>
         </DashboardView>
       </div>
     </main>
