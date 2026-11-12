@@ -4,7 +4,7 @@ import test, { after } from "node:test";
 
 process.env.NODE_ENV = "test";
 process.env.DERIV_APP_ID = "34VWBd5pBISkAMEF3Zxm7";
-process.env.DERIV_REDIRECT_URI = "https://pulsefactor.space";
+process.env.DERIV_REDIRECT_URI = "https://www.pulsefactor.space/oauth/callback";
 
 const { default: app } = await import("../dist/index.mjs");
 const server = app.listen(0, "127.0.0.1");
@@ -29,7 +29,7 @@ test("app page and assets are publicly available without a login", async () => {
   assert.match(html, /href="\/icons\/pulsefactor-192\.png"/);
   assert.doesNotMatch(html, /Enter your access key|UNLOCK APP/);
 
-  const callbackPage = await fetch(`${baseUrl}/?code=example`, { redirect: "manual" });
+  const callbackPage = await fetch(`${baseUrl}/oauth/callback?code=example`, { redirect: "manual" });
   assert.equal(callbackPage.status, 303);
   assert.match(callbackPage.headers.get("location") ?? "", /deriv_oauth_error=invalid_state/);
 
@@ -39,7 +39,7 @@ test("app page and assets are publicly available without a login", async () => {
   assert.equal(oauthUrl.origin, "https://auth.deriv.com");
   assert.equal(oauthUrl.pathname, "/oauth2/auth");
   assert.equal(oauthUrl.searchParams.get("client_id"), "34VWBd5pBISkAMEF3Zxm7");
-  assert.equal(oauthUrl.searchParams.get("redirect_uri"), "https://pulsefactor.space");
+  assert.equal(oauthUrl.searchParams.get("redirect_uri"), "https://www.pulsefactor.space/oauth/callback");
   assert.equal(oauthUrl.searchParams.get("response_type"), "code");
   assert.equal(oauthUrl.searchParams.get("scope"), "trade");
   assert.equal(oauthUrl.searchParams.get("code_challenge_method"), "S256");
