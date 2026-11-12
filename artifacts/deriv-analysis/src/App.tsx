@@ -712,8 +712,11 @@ function Home() {
         armed: limitReached ? false : current.armed,
       }));
       const contractId = typeof record.contractId === 'string' ? record.contractId : 'unknown';
+      const stakeUsed = typeof record.stake === 'number' && Number.isFinite(record.stake)
+        ? record.stake
+        : trade.stake;
       setTradingStatus(
-        `${prediction.signalLabel} · ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} ${account.currency} · contract ${contractId}${limitReached ? ' · SESSION LIMIT REACHED, AUTO-TRADING DISARMED' : ''}`,
+        `${prediction.signalLabel} · stake ${stakeUsed} ${account.currency} · ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} ${account.currency} · contract ${contractId}${limitReached ? ' · SESSION LIMIT REACHED, AUTO-TRADING DISARMED' : ''}`,
       );
       recordActivity(
         profit >= 0 ? 'Demo signal trade won' : 'Demo signal trade lost',
@@ -780,6 +783,16 @@ function Home() {
       setTradingStatus('ERROR: Enter a valid stake, take-profit, and stop-loss amount before arming.');
       return;
     }
+    if (
+      signalTradingSettings.martingaleEnabled
+      && (signalTradingSettings.martingaleFactor === null
+        || !Number.isFinite(signalTradingSettings.martingaleFactor)
+        || signalTradingSettings.martingaleFactor < 1
+        || signalTradingSettings.martingaleFactor > 100)
+    ) {
+      setTradingStatus('ERROR: Enter a martingale value from 1 to 100 for the selected strategy.');
+      return;
+    }
     setSignalTradingSettings((current) => ({ ...current, armed: true }));
     setTradingStatus('Auto-trading armed for the selected demo account. Only validated scanner signals can place trades.');
   };
@@ -791,7 +804,7 @@ function Home() {
       stake: null,
       takeProfit: null,
       stopLoss: null,
-      multipliers: [null, null, null],
+      martingaleFactor: null,
     }));
     setTradingStatus('Stake, limits, and multiplier factors cleared. Enter new values before arming auto-trading.');
   };

@@ -6,6 +6,13 @@ import {
   isDemoTradingSessionStopped,
   type DemoTradingSession,
 } from "../lib/demo-trading-session";
+import {
+  applyMartingaleResult,
+  getMartingaleProgress,
+  getMartingaleStake,
+  type MartingaleConfiguration,
+  type MartingaleStrategy,
+} from "../lib/martingale";
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -82,6 +89,9 @@ type SignalTradeRequest = {
   marketSymbol: string;
   digit: number | null;
   stake: number;
+  martingaleEnabled: boolean;
+  strategy: MartingaleStrategy;
+  martingaleFactor: number | null;
   takeProfit: number;
   stopLoss: number;
   sessionProfit: number;
@@ -152,6 +162,9 @@ function parseSignalTradeRequest(value: unknown): SignalTradeRequest | null {
   const digit = value["digit"];
   const accountId = value["accountId"];
   const stake = value["stake"];
+  const martingaleEnabled = value["martingaleEnabled"];
+  const strategy = value["strategy"];
+  const martingaleFactor = value["martingaleFactor"];
   const takeProfit = value["takeProfit"];
   const stopLoss = value["stopLoss"];
   const sessionProfit = value["sessionProfit"];
@@ -164,6 +177,11 @@ function parseSignalTradeRequest(value: unknown): SignalTradeRequest | null {
     || typeof marketSymbol !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(marketSymbol)
     || !(digit === null || (typeof digit === "number" && Number.isInteger(digit) && digit >= 0 && digit <= 9))
     || typeof stake !== "number" || !Number.isFinite(stake) || stake <= 0 || stake > 10000
+    || typeof martingaleEnabled !== "boolean"
+    || (strategy !== 1 && strategy !== 2 && strategy !== 3)
+    || !(martingaleFactor === null || (typeof martingaleFactor === "number"
+      && Number.isFinite(martingaleFactor) && martingaleFactor >= 1 && martingaleFactor <= 100))
+    || (martingaleEnabled && martingaleFactor === null)
     || typeof takeProfit !== "number" || !Number.isFinite(takeProfit) || takeProfit <= 0 || takeProfit > 1000000
     || typeof stopLoss !== "number" || !Number.isFinite(stopLoss) || stopLoss <= 0 || stopLoss > 1000000
     || typeof sessionProfit !== "number" || !Number.isFinite(sessionProfit)
@@ -186,6 +204,9 @@ function parseSignalTradeRequest(value: unknown): SignalTradeRequest | null {
     marketSymbol,
     digit,
     stake,
+    martingaleEnabled,
+    strategy,
+    martingaleFactor,
     takeProfit,
     stopLoss,
     sessionProfit,
@@ -697,10 +718,6 @@ router.post("/oauth/deriv/trading/execute", async (req, res) => {
     res.status(403).json({ error: "Automated signal trading is restricted to active Deriv demo accounts." });
     return;
   }
-  if (trade.stake > account.balance) {
-    res.status(400).json({ error: "The configured stake exceeds the selected demo account balance." });
-    return;
-  }
   const session = demoTradingSessions.get(account.accountId) ?? {
     profit: trade.sessionProfit,
     stopped: false,
@@ -715,17 +732,45 @@ router.post("/oauth/deriv/trading/execute", async (req, res) => {
     return;
   }
 
+  const martingaleConfiguration: MartingaleConfiguration = {
+    enabled: trade.martingaleEnabled,
+    strategy: trade.strategy,
+    factor: trade.martingaleFactor,
+    baseStake: trade.stake,
+  };
+  const martingaleProgress = getMartingaleProgress(session.martingale, martingaleConfiguration);
+  const currentStake = getMartingaleStake(martingaleProgress);
+  if (currentStake > account.balance || currentStake > 10000) {
+    res.status(400).json({
+      error: "The martingale stake exceeds the selected demo account balance or the $10,000 safety cap. Reduce the base stake or martingale value.",
+    });
+    return;
+  }
+  session.martingale = martingaleProgress;
+
   if (activeTradeAccounts.has(account.accountId)) {
     res.status(409).json({ error: "A trade is already being processed for this demo account." });
     return;
   }
   activeTradeAccounts.add(account.accountId);
   try {
-    const result = await executeDemoSignalTrade(accessToken, account, trade);
+    const result = await executeDemoSignalTrade(
+      accessToken,
+      account,
+      { ...trade, stake: currentStake },
+    );
     applyDemoTradeResult(session, result.profit, trade.takeProfit, trade.stopLoss);
+    session.martingale = applyMartingaleResult(
+      martingaleProgress,
+      martingaleConfiguration,
+      currentStake,
+      result.profit,
+    );
     demoTradingSessions.set(account.accountId, session);
     res.status(200).json({
       ...result,
+      stake: currentStake,
+      nextStake: getMartingaleStake(session.martingale),
       sessionProfit: session.profit,
       sessionStopped: session.stopped,
     });

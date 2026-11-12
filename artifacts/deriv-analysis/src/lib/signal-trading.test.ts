@@ -7,9 +7,10 @@ import {
   parseSignalTradingSettings,
 } from './signal-trading.ts';
 
-test('trading defaults are disarmed with three unconfigured multiplier levels', () => {
+test('trading defaults are disarmed with a single unconfigured martingale value', () => {
   assert.equal(DEFAULT_SIGNAL_TRADING_SETTINGS.armed, false);
-  assert.deepEqual(DEFAULT_SIGNAL_TRADING_SETTINGS.multipliers, [null, null, null]);
+  assert.equal(DEFAULT_SIGNAL_TRADING_SETTINGS.martingaleEnabled, false);
+  assert.equal(DEFAULT_SIGNAL_TRADING_SETTINGS.martingaleFactor, null);
 });
 
 test('parses valid settings and falls back by rejecting malformed or unsafe values', () => {
@@ -23,7 +24,7 @@ test('parses valid settings and falls back by rejecting malformed or unsafe valu
   }), null);
   assert.equal(parseSignalTradingSettings({
     ...DEFAULT_SIGNAL_TRADING_SETTINGS,
-    multipliers: [1, 1000, null],
+    martingaleFactor: 1000,
   }), null);
 });
 
@@ -33,9 +34,19 @@ test('preserves cleared value fields as blank instead of converting them to zero
     stake: null,
     takeProfit: null,
     stopLoss: null,
-    multipliers: [null, null, null] as [null, null, null],
+    martingaleFactor: null,
   };
   assert.deepEqual(parseSignalTradingSettings(cleared), cleared);
+});
+
+test('migrates the previous selected strategy factor into the single martingale field', () => {
+  const parsed = parseSignalTradingSettings({
+    ...DEFAULT_SIGNAL_TRADING_SETTINGS,
+    martingaleEnabled: true,
+    multiplierLevel: 2,
+    multipliers: [2, 3, 4],
+  });
+  assert.equal(parsed?.martingaleFactor, 3);
 });
 
 test('builds a Deriv trade with the selected multiplier and signal parameters', () => {
@@ -61,13 +72,47 @@ test('builds a Deriv trade with the selected multiplier and signal parameters', 
     expectedValue: null,
   }, {
     ...DEFAULT_SIGNAL_TRADING_SETTINGS,
+    martingaleEnabled: true,
     multiplierLevel: 2,
-    multipliers: [null, 3, null],
+    martingaleFactor: 3,
   });
-  assert.equal(trade.stake, 3);
-  assert.equal(trade.multiplier, 3);
+  assert.equal(trade.stake, 1);
+  assert.equal(trade.strategy, 2);
+  assert.equal(trade.martingaleFactor, 3);
   assert.equal(trade.marketSymbol, 'R_100');
   assert.equal(trade.digit, 7);
+});
+
+test('martingale off always uses the base stake even when a strategy factor is configured', () => {
+  const trade = createDerivSignalTrade({
+    id: 'signal-1',
+    engineId: 'matches-differs',
+    contractType: 'match-digit',
+    signalKey: '7',
+    signalLabel: 'MATCH 7',
+    digit: 7,
+    marketSymbol: 'R_100',
+    marketLabel: 'Volatility 100',
+    startedAt: 1,
+    expiresAt: 2,
+    targetTickOffset: 3,
+    baselineRate: 0.1,
+    backtestHits: 0,
+    backtestPredictions: 0,
+    backtestAccuracy: 0,
+    estimatedProbability: 0.1,
+    wilsonLowerBound: 0,
+    wilsonUpperBound: 1,
+    expectedValue: null,
+  }, {
+    ...DEFAULT_SIGNAL_TRADING_SETTINGS,
+    stake: 2,
+    martingaleEnabled: false,
+    multiplierLevel: 3,
+    martingaleFactor: 8,
+  });
+  assert.equal(trade.stake, 2);
+  assert.equal(trade.martingaleFactor, null);
 });
 
 test('session limits stop at configured profit or loss thresholds', () => {

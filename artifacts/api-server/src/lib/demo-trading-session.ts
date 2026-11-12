@@ -1,6 +1,9 @@
+import type { MartingaleProgress } from "./martingale";
+
 export type DemoTradingSession = {
   profit: number;
   stopped: boolean;
+  martingale?: MartingaleProgress;
 };
 
 export function isDemoTradingSessionStopped(

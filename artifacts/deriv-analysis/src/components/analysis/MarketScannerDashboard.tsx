@@ -176,11 +176,6 @@ export function MarketScannerDashboard({
     key: K,
     value: SignalTradingSettings[K],
   ) => onTradingSettingsChange({ ...tradingSettings, [key]: value });
-  const updateMultiplier = (index: number, value: string) => {
-    const multipliers = [...tradingSettings.multipliers] as SignalTradingSettings['multipliers'];
-    multipliers[index] = value === '' ? null : Number(value);
-    onTradingSettingsChange({ ...tradingSettings, multipliers });
-  };
   const tradingNumberClass = 'w-full rounded-md border border-[#285264] bg-[#0b202c] px-2.5 py-2 text-[11px] text-[#e1f3f5] outline-none focus:border-[#3dd5e3]';
 
   return (
@@ -365,49 +360,83 @@ export function MarketScannerDashboard({
           </label>
         </div>
 
-        <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
-          <label className="space-y-1">
-            <span className="block font-mono-ui text-[8px] font-bold tracking-wider text-[#83b6b3]">MULTIPLIER LEVEL</span>
-            <select
-              value={tradingSettings.multiplierLevel}
-              onChange={(event) => {
-                const level = Number(event.currentTarget.value);
-                if (level === 1 || level === 2 || level === 3) {
-                  updateTradingSetting('multiplierLevel', level);
-                }
-              }}
-              disabled={tradingSettings.armed || tradingBusy}
-              data-testid="select-trading-multiplier-level"
-              aria-label="Multiplier level"
-              className={tradingNumberClass}
-            >
-              <option value="1">LEVEL 1</option>
-              <option value="2">LEVEL 2</option>
-              <option value="3">LEVEL 3</option>
-            </select>
-          </label>
-          <div className="space-y-1">
-            <span className="block font-mono-ui text-[8px] font-bold tracking-wider text-[#83b6b3]">LEVEL FACTORS · OPTIONAL</span>
-            <div className="grid grid-cols-3 gap-1.5">
-              {tradingSettings.multipliers.map((multiplier, index) => (
-                <label key={index} className="relative">
-                  <span className="sr-only">Level {index + 1} multiplier factor</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max="100"
-                    step="0.1"
-                    value={multiplier ?? ''}
-                    onChange={(event) => updateMultiplier(index, event.currentTarget.value)}
-                    disabled={tradingSettings.armed || tradingBusy}
-                    data-testid={`input-trading-multiplier-${index + 1}`}
-                    aria-label={`Level ${index + 1} multiplier factor`}
-                    placeholder={`L${index + 1} · off`}
-                    className={tradingNumberClass}
-                  />
-                </label>
-              ))}
+        <div className="mt-3 rounded-lg border border-[#273f4a] bg-[#0a1821]/80 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-mono-ui text-[9px] font-extrabold tracking-wider text-[#dce9e7]">MARTINGALE</p>
+              <p className="mt-1 text-[9px] text-[#82979f]">
+                {tradingSettings.martingaleEnabled
+                  ? 'Enabled · applies the selected strategy factor to the base stake.'
+                  : 'Off · every trade uses the base stake.'}
+              </p>
             </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={tradingSettings.martingaleEnabled}
+              aria-label="Martingale"
+              onClick={() => updateTradingSetting('martingaleEnabled', !tradingSettings.martingaleEnabled)}
+              disabled={tradingSettings.armed || tradingBusy}
+              data-testid="toggle-martingale"
+              className={`flex min-h-9 items-center gap-2 rounded-lg border px-3 py-2 font-mono-ui text-[9px] font-extrabold tracking-wider transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                tradingSettings.martingaleEnabled
+                  ? 'border-[#bd8a42]/60 bg-[#3a2a19] text-[#f2cd88]'
+                  : 'border-[#38505d] bg-[#14242e] text-[#a8c0c6]'
+              }`}
+            >
+              <span className={`relative h-[14px] w-[25px] rounded-full transition ${
+                tradingSettings.martingaleEnabled ? 'bg-[#c18a3d]' : 'bg-[#43505b]'
+              }`}>
+                <span className={`absolute top-[2px] h-[10px] w-[10px] rounded-full bg-[#fff4dd] transition-transform ${
+                  tradingSettings.martingaleEnabled ? 'translate-x-[13px]' : 'translate-x-[2px]'
+                }`} />
+              </span>
+              {tradingSettings.martingaleEnabled ? 'ON' : 'OFF'}
+            </button>
+          </div>
+
+          <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+            <label className="space-y-1">
+              <span className="block font-mono-ui text-[8px] font-bold tracking-wider text-[#83b6b3]">MARTINGALE STRATEGY</span>
+              <select
+                value={tradingSettings.multiplierLevel}
+                onChange={(event) => {
+                  const level = Number(event.currentTarget.value);
+                  if (level === 1 || level === 2 || level === 3) {
+                    updateTradingSetting('multiplierLevel', level);
+                  }
+                }}
+                disabled={!tradingSettings.martingaleEnabled || tradingSettings.armed || tradingBusy}
+                data-testid="select-trading-multiplier-level"
+                aria-label="Martingale strategy"
+                className={tradingNumberClass}
+              >
+                <option value="1">CLASSIC</option>
+                <option value="2">DYNAMIC</option>
+                <option value="3">DYNAMIC HYBRID</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="block font-mono-ui text-[8px] font-bold tracking-wider text-[#83b6b3]">
+                MARTINGALE VALUE · {['CLASSIC', 'DYNAMIC', 'DYNAMIC HYBRID'][tradingSettings.multiplierLevel - 1]}
+              </span>
+              <input
+                type="number"
+                min="1"
+                max="100"
+                step="0.1"
+                value={tradingSettings.martingaleFactor ?? ''}
+                onChange={(event) => updateTradingSetting(
+                  'martingaleFactor',
+                  event.currentTarget.value === '' ? null : Number(event.currentTarget.value),
+                )}
+                disabled={!tradingSettings.martingaleEnabled || tradingSettings.armed || tradingBusy}
+                data-testid="input-martingale-value"
+                aria-label={`Martingale value for ${['Classic', 'Dynamic', 'Dynamic Hybrid'][tradingSettings.multiplierLevel - 1]}`}
+                placeholder="Enter multiplier"
+                className={tradingNumberClass}
+              />
+            </label>
           </div>
         </div>
 
