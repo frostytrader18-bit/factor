@@ -23,6 +23,7 @@ test("app page and assets are publicly available without a login", async () => {
   const indexHtml = await fetch(baseUrl);
   const html = await indexHtml.text();
   assert.equal(indexHtml.status, 200);
+  assert.equal(indexHtml.headers.get("cache-control"), "no-store");
   assert.match(html, /type="module"/);
   assert.match(html, /<title>PULSE-FACTOR<\/title>/);
   assert.match(html, /href="https:\/\/pulsefactor\.space\/"/);

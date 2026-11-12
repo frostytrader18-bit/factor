@@ -89,6 +89,7 @@ app.use((req, res, next) => {
     res.status(404).end();
     return;
   }
+  res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Security-Policy", contentSecurityPolicy);
   res.sendFile(appIndexPath, (error) => {
     if (error) next(error);
