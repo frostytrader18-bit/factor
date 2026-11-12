@@ -9,6 +9,7 @@ import {
 
 test('trading defaults are disarmed with a single unconfigured martingale value', () => {
   assert.equal(DEFAULT_SIGNAL_TRADING_SETTINGS.armed, false);
+  assert.equal(DEFAULT_SIGNAL_TRADING_SETTINGS.durationTicks, 1);
   assert.equal(DEFAULT_SIGNAL_TRADING_SETTINGS.martingaleEnabled, false);
   assert.equal(DEFAULT_SIGNAL_TRADING_SETTINGS.martingaleFactor, null);
 });
@@ -26,6 +27,20 @@ test('parses valid settings and falls back by rejecting malformed or unsafe valu
     ...DEFAULT_SIGNAL_TRADING_SETTINGS,
     martingaleFactor: 1000,
   }), null);
+  assert.equal(parseSignalTradingSettings({
+    ...DEFAULT_SIGNAL_TRADING_SETTINGS,
+    durationTicks: 1.5,
+  }), null);
+  assert.equal(parseSignalTradingSettings({
+    ...DEFAULT_SIGNAL_TRADING_SETTINGS,
+    durationTicks: 11,
+  }), null);
+});
+
+test('older saved trading settings default to a one-tick duration', () => {
+  const legacySettings: Record<string, unknown> = { ...DEFAULT_SIGNAL_TRADING_SETTINGS };
+  delete legacySettings.durationTicks;
+  assert.equal(parseSignalTradingSettings(legacySettings)?.durationTicks, 1);
 });
 
 test('preserves cleared value fields as blank instead of converting them to zero', () => {
@@ -49,7 +64,7 @@ test('migrates the previous selected strategy factor into the single martingale 
   assert.equal(parsed?.martingaleFactor, 3);
 });
 
-test('builds a Deriv trade with the selected multiplier and signal parameters', () => {
+test('builds a Deriv trade from an unconfirmed prediction with the selected strategy parameters', () => {
   const trade = createDerivSignalTrade({
     id: 'signal-1',
     engineId: 'matches-differs',
@@ -70,13 +85,16 @@ test('builds a Deriv trade with the selected multiplier and signal parameters', 
     wilsonLowerBound: 0,
     wilsonUpperBound: 1,
     expectedValue: null,
+    isValidated: false,
   }, {
     ...DEFAULT_SIGNAL_TRADING_SETTINGS,
+    durationTicks: 2,
     martingaleEnabled: true,
     multiplierLevel: 2,
     martingaleFactor: 3,
   });
   assert.equal(trade.stake, 1);
+  assert.equal(trade.durationTicks, 2);
   assert.equal(trade.strategy, 2);
   assert.equal(trade.martingaleFactor, 3);
   assert.equal(trade.marketSymbol, 'R_100');
@@ -112,6 +130,7 @@ test('martingale off always uses the base stake even when a strategy factor is c
     martingaleFactor: 8,
   });
   assert.equal(trade.stake, 2);
+  assert.equal(trade.durationTicks, 1);
   assert.equal(trade.martingaleFactor, null);
 });
 

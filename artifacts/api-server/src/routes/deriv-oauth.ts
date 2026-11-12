@@ -89,6 +89,7 @@ type SignalTradeRequest = {
   marketSymbol: string;
   digit: number | null;
   stake: number;
+  durationTicks: number;
   martingaleEnabled: boolean;
   strategy: MartingaleStrategy;
   martingaleFactor: number | null;
@@ -161,6 +162,7 @@ function parseSignalTradeRequest(value: unknown): SignalTradeRequest | null {
   const digit = value["digit"];
   const accountId = value["accountId"];
   const stake = value["stake"];
+  const durationTicks = value["durationTicks"];
   const martingaleEnabled = value["martingaleEnabled"];
   const strategy = value["strategy"];
   const martingaleFactor = value["martingaleFactor"];
@@ -175,6 +177,8 @@ function parseSignalTradeRequest(value: unknown): SignalTradeRequest | null {
     || typeof marketSymbol !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(marketSymbol)
     || !(digit === null || (typeof digit === "number" && Number.isInteger(digit) && digit >= 0 && digit <= 9))
     || typeof stake !== "number" || !Number.isFinite(stake) || stake <= 0 || stake > 10000
+    || typeof durationTicks !== "number" || !Number.isInteger(durationTicks)
+    || durationTicks < 1 || durationTicks > 10
     || typeof martingaleEnabled !== "boolean"
     || (strategy !== 1 && strategy !== 2 && strategy !== 3)
     || !(martingaleFactor === null || (typeof martingaleFactor === "number"
@@ -201,6 +205,7 @@ function parseSignalTradeRequest(value: unknown): SignalTradeRequest | null {
     marketSymbol,
     digit,
     stake,
+    durationTicks,
     martingaleEnabled,
     strategy,
     martingaleFactor,
@@ -221,14 +226,13 @@ function getDerivContractParameters(trade: SignalTradeRequest, currency: string)
           : trade.signalKey === "even"
             ? "DIGITEVEN"
             : "DIGITODD";
-  const duration = trade.contractType === "match-digit" ? 3 : 1;
   return {
     proposal: 1,
     amount: trade.stake,
     basis: "stake",
     contract_type: contractType,
     currency,
-    duration,
+    duration: trade.durationTicks,
     duration_unit: "t",
     symbol: trade.marketSymbol,
     ...(trade.digit === null ? {} : { barrier: String(trade.digit) }),

@@ -198,6 +198,7 @@ test("signal trades use the selected real or demo account and keep independent a
     marketSymbol: "R_100",
     digit: 7,
     stake: 1,
+    durationTicks: 1,
     martingaleEnabled: false,
     strategy: 1,
     martingaleFactor: null,
@@ -295,7 +296,11 @@ test("signal trades use the selected real or demo account and keep independent a
           "content-type": "application/json",
           cookie: "pulsefactor_deriv_session=test-access-token",
         },
-        body: JSON.stringify({ ...body, accountId }),
+        body: JSON.stringify({
+          ...body,
+          accountId,
+          durationTicks: accountId === "CR-DEMO-54321" ? 1 : 2,
+        }),
       });
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), {
@@ -308,6 +313,11 @@ test("signal trades use the selected real or demo account and keep independent a
         sessionStopped: false,
       });
       assert.ok(websocketRequests.some((request) => request.switch_account === 1 && request.loginid === accountId));
+      const proposalRequest = websocketRequests.find((request) => (
+        request.proposal === 1 && request.duration === (accountId === "CR-DEMO-54321" ? 1 : 2)
+      ));
+      assert.ok(proposalRequest);
+      assert.equal(proposalRequest.duration_unit, "t");
 
       const session = await nativeFetch(
         `${baseUrl}/api/oauth/deriv/trading/session?accountId=${accountId}`,
@@ -336,6 +346,16 @@ test("signal trades use the selected real or demo account and keep independent a
       body: JSON.stringify({ ...body, accountId: "CR-REAL-54321", signalKey: "8" }),
     });
     assert.equal(malformed.status, 400);
+
+    const invalidDuration = await nativeFetch(`${baseUrl}/api/oauth/deriv/trading/execute`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: "pulsefactor_deriv_session=test-access-token",
+      },
+      body: JSON.stringify({ ...body, accountId: "CR-REAL-54321", durationTicks: 0 }),
+    });
+    assert.equal(invalidDuration.status, 400);
 
     const resetReal = await nativeFetch(`${baseUrl}/api/oauth/deriv/trading/session/reset`, {
       method: "POST",

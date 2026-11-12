@@ -31,6 +31,7 @@ type ScannerSettings = {
 
 type MarketScannerDashboardProps = {
   markets: ScannedMarket[];
+  autoScan: boolean;
   feedStatus: FeedStatus;
   feedError: string | null;
   onMarketSelect: (symbol: string) => void;
@@ -125,6 +126,7 @@ function readScannerSettings(): ScannerSettings {
 
 export function MarketScannerDashboard({
   markets,
+  autoScan,
   feedStatus,
   feedError,
   onMarketSelect,
@@ -289,7 +291,7 @@ export function MarketScannerDashboard({
             <div className="min-w-0">
               <h3 className="font-display text-[11px] font-extrabold tracking-[.08em] text-[#e4f2ee]">SIGNAL TRADING</h3>
               <p className="mt-1 text-[9px] leading-relaxed text-[#8fa7a7]">
-                Demo-only automation · one open order at a time · session profit/loss limits stop new orders.
+                Uses the selected account · predictions trade as detected, including unconfirmed signals · one open order at a time.
               </p>
             </div>
           </div>
@@ -298,11 +300,13 @@ export function MarketScannerDashboard({
               ? 'border-[#33a786]/60 bg-[#103b32] text-[#86edc4]'
               : 'border-[#49606b] bg-[#182630] text-[#a3b3bc]'
           }`}>
-            {tradingSettings.armed ? 'ARMED · DEMO' : 'DISARMED'}
+            {tradingSettings.armed
+              ? `ARMED · ${selectedAccount?.accountType.toUpperCase() ?? 'ACCOUNT'}`
+              : 'DISARMED'}
           </span>
         </div>
 
-        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           <label className="space-y-1">
             <span className="block font-mono-ui text-[8px] font-bold tracking-wider text-[#83b6b3]">STAKE · {selectedAccount?.currency || 'ACCOUNT CURRENCY'}</span>
             <input
@@ -321,6 +325,25 @@ export function MarketScannerDashboard({
               aria-label="Trade stake"
               className={tradingNumberClass}
             />
+          </label>
+          <label className="space-y-1">
+            <span className="block font-mono-ui text-[8px] font-bold tracking-wider text-[#83b6b3]">TRADE DURATION</span>
+            <select
+              value={tradingSettings.durationTicks}
+              onChange={(event) => updateTradingSetting('durationTicks', Number(event.currentTarget.value))}
+              disabled={tradingSettings.armed || tradingBusy}
+              data-testid="select-trading-duration"
+              aria-label="Trade duration in ticks"
+              className={tradingNumberClass}
+            >
+              {Array.from({ length: 10 }, (_, index) => {
+                const ticks = index + 1;
+                return <option key={ticks} value={ticks}>{ticks} {ticks === 1 ? 'tick' : 'ticks'}</option>;
+              })}
+            </select>
+            <span className="block text-[8px] leading-relaxed text-[#82979f]">
+              1 tick closes at the next tick; 2 ticks enters on tick 1 and closes on tick 2.
+            </span>
           </label>
           <label className="space-y-1">
             <span className="block font-mono-ui text-[8px] font-bold tracking-wider text-[#83b6b3]">TAKE PROFIT</span>
@@ -488,7 +511,7 @@ export function MarketScannerDashboard({
             {tradingSettings.armed ? <Square size={12} /> : <Play size={12} />}
             {tradingSettings.armed
               ? 'DISARM AUTO-TRADING'
-              : `ARM ${selectedAccount?.accountType === 'real' ? 'REAL' : 'DEMO'} AUTO-TRADING`}
+              : `ARM ${selectedAccount ? `${selectedAccount.accountType.toUpperCase()} ` : ''}AUTO-TRADING`}
           </button>
           {selectedAccount && (
             <span className={`font-mono-ui text-[8px] font-bold tracking-wider ${
@@ -514,6 +537,7 @@ export function MarketScannerDashboard({
       <DigitScannerView
         markets={markets}
         contractType={settings.contractType}
+        autoScan={autoScan}
         configuration={settings.configuration}
         feedStatus={feedStatus}
         feedError={feedError}

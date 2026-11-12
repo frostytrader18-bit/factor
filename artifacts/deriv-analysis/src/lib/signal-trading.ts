@@ -8,6 +8,7 @@ export type SignalTradingSettings = {
   stake: number | null;
   takeProfit: number | null;
   stopLoss: number | null;
+  durationTicks: number;
   martingaleEnabled: boolean;
   multiplierLevel: MultiplierLevel;
   martingaleFactor: number | null;
@@ -19,6 +20,7 @@ export const DEFAULT_SIGNAL_TRADING_SETTINGS: SignalTradingSettings = {
   stake: 1,
   takeProfit: 10,
   stopLoss: 5,
+  durationTicks: 1,
   martingaleEnabled: false,
   multiplierLevel: 1,
   martingaleFactor: null,
@@ -31,6 +33,7 @@ export type DerivSignalTrade = {
   marketSymbol: string;
   digit: number | null;
   stake: number;
+  durationTicks: number;
   takeProfit: number;
   stopLoss: number;
   martingaleEnabled: boolean;
@@ -52,6 +55,7 @@ export function parseSignalTradingSettings(value: unknown): SignalTradingSetting
   const stake = parsed.stake;
   const takeProfit = parsed.takeProfit;
   const stopLoss = parsed.stopLoss;
+  const durationTicks = parsed.durationTicks ?? 1;
   const sessionProfit = parsed.sessionProfit ?? 0;
   if (
     (multiplierLevel !== 1 && multiplierLevel !== 2 && multiplierLevel !== 3)
@@ -62,6 +66,8 @@ export function parseSignalTradingSettings(value: unknown): SignalTradingSetting
       && Number.isFinite(takeProfit) && takeProfit > 0 && takeProfit <= 1000000))
     || !(stopLoss === null || (typeof stopLoss === 'number'
       && Number.isFinite(stopLoss) && stopLoss > 0 && stopLoss <= 1000000))
+    || typeof durationTicks !== 'number' || !Number.isInteger(durationTicks)
+    || durationTicks < 1 || durationTicks > 10
     || typeof sessionProfit !== 'number' || !Number.isFinite(sessionProfit)
     || typeof parsed.armed !== 'boolean'
   ) {
@@ -73,6 +79,7 @@ export function parseSignalTradingSettings(value: unknown): SignalTradingSetting
     stake,
     takeProfit,
     stopLoss,
+    durationTicks,
     martingaleEnabled: typeof parsed.martingaleEnabled === 'boolean'
       ? parsed.martingaleEnabled
       : false,
@@ -97,6 +104,7 @@ export function createDerivSignalTrade(
     stake: settings.stake,
     takeProfit: settings.takeProfit,
     stopLoss: settings.stopLoss,
+    durationTicks: settings.durationTicks,
     martingaleEnabled: settings.martingaleEnabled,
     strategy: settings.multiplierLevel,
     martingaleFactor: settings.martingaleEnabled ? settings.martingaleFactor : null,

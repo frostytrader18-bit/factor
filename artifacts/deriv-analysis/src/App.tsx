@@ -684,10 +684,6 @@ function Home() {
 
   const executeSignalTrade = async (prediction: PredictionOutcomeStart) => {
     if (!signalTradingSettings.armed) return;
-    if (prediction.isValidated !== true) {
-      setTradingStatus(`Signal ${prediction.signalLabel} was not validated and was not traded.`);
-      return;
-    }
     if (activeTradeRef.current) {
       setTradingStatus('A trade is still being processed. Skipping this signal.');
       return;
@@ -729,7 +725,8 @@ function Home() {
 
     activeTradeRef.current = true;
     setTradingBusy(true);
-    setTradingStatus(`Submitting ${prediction.signalLabel} on ${prediction.marketLabel} via ${account.accountType} account ${account.accountId} (${trade.stake} ${account.currency})…`);
+    const signalQuality = prediction.isValidated === true ? 'validated' : 'unconfirmed';
+    setTradingStatus(`Submitting ${signalQuality} prediction ${prediction.signalLabel} on ${prediction.marketLabel} via ${account.accountType} account ${account.accountId} (${trade.stake} ${account.currency})…`);
     try {
       const response = await fetch('/api/oauth/deriv/trading/execute', {
         method: 'POST',
@@ -802,7 +799,7 @@ function Home() {
         }));
       }
       setTradingStatus(
-        `${account.accountType.toUpperCase()} ${account.accountId} · ${prediction.signalLabel} · stake ${stakeUsed} ${account.currency} · ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} ${account.currency} · contract ${contractId}${limitReached ? ' · SESSION LIMIT REACHED, AUTO-TRADING DISARMED' : ''}`,
+        `${account.accountType.toUpperCase()} ${account.accountId} · ${signalQuality.toUpperCase()} · ${prediction.signalLabel} · stake ${stakeUsed} ${account.currency} · ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} ${account.currency} · contract ${contractId}${limitReached ? ' · SESSION LIMIT REACHED, AUTO-TRADING DISARMED' : ''}`,
       );
       recordActivity(
         profit >= 0 ? 'Signal trade won' : 'Signal trade lost',
@@ -886,7 +883,7 @@ function Home() {
     }
     armedAccountIdRef.current = account.accountId;
     setSignalTradingSettings((current) => ({ ...current, armed: true }));
-    setTradingStatus(`Auto-trading armed for the selected ${account.accountType} account. Only validated scanner signals can place trades.`);
+    setTradingStatus(`Auto-trading armed for the selected ${account.accountType} account. Scanner predictions will be traded as found, including unconfirmed signals.`);
   };
 
   const clearTradingValues = () => {
@@ -2023,7 +2020,7 @@ function Home() {
                 <ChevronDown size={14} className="shrink-0 text-[#6aa4a4]" />
               </label>
               <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => { const next = !autoScan; setAppPreferences((previous) => ({ ...previous, autoScan: next })); recordActivity(`Auto-scan ${next ? 'enabled' : 'paused'}`, 'Local interface toggle only; no automatic analysis is running.', next ? 'green' : 'gold'); }} aria-pressed={autoScan} data-testid="toggle-auto-scan" className={`button-auto col-span-2 flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[10px] font-extrabold tracking-[.04em] transition ${autoScan ? 'border-[#28777a] bg-[#10383a] text-[#64dfd8]' : 'border-[#394654] bg-[#19222b] text-[#aab6c0]'}`}>
+                <button type="button" onClick={() => { const next = !autoScan; setAppPreferences((previous) => ({ ...previous, autoScan: next })); recordActivity(`Auto-scan ${next ? 'enabled' : 'paused'}`, next ? 'The cross-market scanner will run automatically when live tick history is ready.' : 'Automatic scans are paused; manual scans remain available.', next ? 'green' : 'gold'); }} aria-pressed={autoScan} data-testid="toggle-auto-scan" className={`button-auto col-span-2 flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[10px] font-extrabold tracking-[.04em] transition ${autoScan ? 'border-[#28777a] bg-[#10383a] text-[#64dfd8]' : 'border-[#394654] bg-[#19222b] text-[#aab6c0]'}`}>
                   <span className={`relative h-[14px] w-[25px] rounded-full transition ${autoScan ? 'bg-[#19aaa9]' : 'bg-[#43505b]'}`}><span className={`absolute top-[2px] h-[10px] w-[10px] rounded-full bg-[#e5f7f3] transition-transform ${autoScan ? 'translate-x-[13px]' : 'translate-x-[2px]'}`} /></span>
                   AUTO-SCAN <span className="font-mono-ui text-[9px]">{autoScan ? 'ON' : 'OFF'}</span>
                 </button>
@@ -2312,6 +2309,7 @@ function Home() {
               ticks: scannerTicksByMarket[item.symbol] ?? [],
               tickVersion: scannerTickVersionsByMarket[item.symbol] ?? 0,
             }))}
+            autoScan={autoScan}
             feedStatus={scannerFeedStatus}
             feedError={scannerFeedError}
             onMarketSelect={selectMarket}

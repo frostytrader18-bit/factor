@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, Clock3, ShieldCheck, Signal, Target, Wifi } from 'lucide-react';
 import {
   FRESH_SCAN_TICK_COUNT,
@@ -39,6 +39,7 @@ type ActivePrediction = ContractSignal & {
 type DigitScannerViewProps = {
   markets: ScannedMarket[];
   contractType: ContractType;
+  autoScan: boolean;
   feedStatus: FeedStatus;
   feedError: string | null;
   configuration: AnalysisEngineConfiguration;
@@ -50,6 +51,8 @@ type DigitScannerViewProps = {
 const TICK_COLLECTION_SECONDS = 10;
 const SCANNER_COUNTDOWN_SECONDS = TICK_COLLECTION_SECONDS;
 const PREDICTION_VALIDITY_SECONDS = 30;
+const AUTO_SCAN_INITIAL_DELAY_MS = 1000;
+const AUTO_SCAN_RETRY_DELAY_MS = 5000;
 
 function formatPercent(value: number | null) {
   return value === null ? '--' : `${(value * 100).toFixed(1)}%`;
@@ -71,6 +74,7 @@ function settingsDigitLabel(contractType: ContractType, targetDigit: number | nu
 export function DigitScannerView({
   markets,
   contractType,
+  autoScan,
   feedStatus,
   feedError,
   configuration,
@@ -128,7 +132,7 @@ export function DigitScannerView({
     setScanPhase('idle');
   }, [configuration, contractType]);
 
-  const initiateManualScan = () => {
+  const initiateManualScan = useCallback(() => {
     if (feedStatus !== 'live' || isAnalyzing) {
       return;
     }
@@ -139,11 +143,31 @@ export function DigitScannerView({
     scanStartTickVersionsRef.current = new Map(
       marketsRef.current.map((market) => [market.symbol, market.tickVersion]),
     );
-    setScanMessage(`Collecting 10 fresh ticks for 10s; a validated prediction will be traded as soon as the scan completes.`);
+    setScanMessage('Collecting 10 fresh ticks for 10s; the best available prediction will be submitted as soon as the scan completes when trading is armed.');
     setScanPhase('collecting');
     setScanCountdownSeconds(SCANNER_COUNTDOWN_SECONDS);
     setIsAnalyzing(true);
-  };
+  }, [feedStatus, isAnalyzing]);
+
+  useEffect(() => {
+    if (!autoScan || feedStatus !== 'live' || readyMarkets === 0 || isAnalyzing || predictionIsActive) {
+      return;
+    }
+
+    const delay = scanResults === null
+      ? AUTO_SCAN_INITIAL_DELAY_MS
+      : AUTO_SCAN_RETRY_DELAY_MS;
+    const timer = window.setTimeout(initiateManualScan, delay);
+    return () => window.clearTimeout(timer);
+  }, [
+    autoScan,
+    feedStatus,
+    initiateManualScan,
+    isAnalyzing,
+    predictionIsActive,
+    readyMarkets,
+    scanResults,
+  ]);
 
   useEffect(() => {
     if (!isAnalyzing) {
@@ -500,7 +524,7 @@ export function DigitScannerView({
                     </p>
                     <p className="mt-2 text-[9px] text-[#82939a]">
                       {scanPhase === 'collecting'
-                        ? `Collecting 10 fresh ticks across ${totalMarkets} markets; the signal is analyzed and traded immediately when the scan completes.`
+                        ? `Collecting 10 fresh ticks across ${totalMarkets} markets; the signal is submitted immediately when the scan completes if trading is armed.`
                         : `Using the prior 100 ticks plus fresh ticks. Validated signals are submitted immediately; low-data candidates remain unconfirmed.`}
                     </p>
                     <div className="mx-auto mt-3 h-1.5 max-w-sm overflow-hidden rounded-full bg-[#1a2636]">
