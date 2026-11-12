@@ -214,6 +214,7 @@ export function DigitScannerView({
         wilsonLowerBound: topCandidate.wilsonLowerBound,
         wilsonUpperBound: topCandidate.wilsonUpperBound,
         expectedValue: topCandidate.expectedValue,
+        isValidated: topCandidate.isValidated,
       };
       callbacksRef.current.onPredictionStart(outcomeStart);
       setActivePrediction({

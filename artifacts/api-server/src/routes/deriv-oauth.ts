@@ -1,6 +1,11 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import { logger } from "../lib/logger";
+import {
+  applyDemoTradeResult,
+  isDemoTradingSessionStopped,
+  type DemoTradingSession,
+} from "../lib/demo-trading-session";
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -70,6 +75,21 @@ type DerivAccountBalance = {
   currency: string;
 };
 
+type SignalTradeRequest = {
+  accountId: string;
+  contractType: "match-digit" | "differ" | "over" | "under" | "even-odd";
+  signalKey: string;
+  marketSymbol: string;
+  digit: number | null;
+  stake: number;
+  takeProfit: number;
+  stopLoss: number;
+  sessionProfit: number;
+};
+
+const activeTradeAccounts = new Set<string>();
+const demoTradingSessions = new Map<string, DemoTradingSession>();
+
 function getAccountRows(payload: unknown, depth = 0): unknown[] | null {
   if (Array.isArray(payload)) return payload;
   if (!isRecord(payload) || depth >= 3) return null;
@@ -122,6 +142,287 @@ async function validateApiToken(token: string): Promise<globalThis.Response> {
     },
     signal: AbortSignal.timeout(10_000),
   });
+}
+
+function parseSignalTradeRequest(value: unknown): SignalTradeRequest | null {
+  if (!isRecord(value)) return null;
+  const contractType = value["contractType"];
+  const signalKey = value["signalKey"];
+  const marketSymbol = value["marketSymbol"];
+  const digit = value["digit"];
+  const accountId = value["accountId"];
+  const stake = value["stake"];
+  const takeProfit = value["takeProfit"];
+  const stopLoss = value["stopLoss"];
+  const sessionProfit = value["sessionProfit"];
+  if (
+    typeof accountId !== "string" || accountId.length === 0 || accountId.length > 64
+    || (contractType !== "match-digit" && contractType !== "differ"
+      && contractType !== "over" && contractType !== "under"
+      && contractType !== "even-odd")
+    || typeof signalKey !== "string" || signalKey.length > 32
+    || typeof marketSymbol !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(marketSymbol)
+    || !(digit === null || (typeof digit === "number" && Number.isInteger(digit) && digit >= 0 && digit <= 9))
+    || typeof stake !== "number" || !Number.isFinite(stake) || stake <= 0 || stake > 10000
+    || typeof takeProfit !== "number" || !Number.isFinite(takeProfit) || takeProfit <= 0 || takeProfit > 1000000
+    || typeof stopLoss !== "number" || !Number.isFinite(stopLoss) || stopLoss <= 0 || stopLoss > 1000000
+    || typeof sessionProfit !== "number" || !Number.isFinite(sessionProfit)
+  ) {
+    return null;
+  }
+
+  if (contractType === "match-digit" || contractType === "differ") {
+    if (digit === null || signalKey !== String(digit)) return null;
+  } else if (contractType === "over" || contractType === "under") {
+    if (digit === null || signalKey !== `${contractType}-${digit}`) return null;
+  } else if (digit !== null || (signalKey !== "even" && signalKey !== "odd")) {
+    return null;
+  }
+
+  return {
+    accountId,
+    contractType,
+    signalKey,
+    marketSymbol,
+    digit,
+    stake,
+    takeProfit,
+    stopLoss,
+    sessionProfit,
+  };
+}
+
+function getDerivContractParameters(trade: SignalTradeRequest, currency: string) {
+  const contractType = trade.contractType === "match-digit"
+    ? "DIGITMATCH"
+    : trade.contractType === "differ"
+      ? "DIGITDIFF"
+      : trade.contractType === "over"
+        ? "DIGITOVER"
+        : trade.contractType === "under"
+          ? "DIGITUNDER"
+          : trade.signalKey === "even"
+            ? "DIGITEVEN"
+            : "DIGITODD";
+  const duration = trade.contractType === "match-digit" ? 3 : 1;
+  return {
+    proposal: 1,
+    amount: trade.stake,
+    basis: "stake",
+    contract_type: contractType,
+    currency,
+    duration,
+    duration_unit: "t",
+    symbol: trade.marketSymbol,
+    ...(trade.digit === null ? {} : { barrier: String(trade.digit) }),
+  };
+}
+
+function decodeSocketMessage(event: MessageEvent): Record<string, unknown> | null {
+  try {
+    const message: unknown = JSON.parse(String(event.data));
+    return isRecord(message) ? message : null;
+  } catch (error) {
+    logger.warn({ err: error }, "Deriv trade socket returned an invalid message");
+    return null;
+  }
+}
+
+function waitForSocketOpen(socket: WebSocket): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.close();
+      reject(new Error("Deriv trade connection timed out."));
+    }, 10_000);
+    socket.addEventListener("open", () => {
+      clearTimeout(timeout);
+      resolve();
+    }, { once: true });
+    socket.addEventListener("error", () => {
+      clearTimeout(timeout);
+      reject(new Error("Could not connect to Deriv trading."));
+    }, { once: true });
+  });
+}
+
+function sendDerivRequest(
+  socket: WebSocket,
+  reqId: number,
+  request: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.removeEventListener("message", onMessage);
+      socket.removeEventListener("error", onError);
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("Deriv did not respond to the trade request in time."));
+    }, 10_000);
+    const onMessage = (event: MessageEvent) => {
+      const message = decodeSocketMessage(event);
+      if (!message || message["req_id"] !== reqId) return;
+      cleanup();
+      if (isRecord(message["error"])) {
+        const detail = message["error"]["message"];
+        reject(new Error(typeof detail === "string" ? detail : "Deriv rejected the trade request."));
+        return;
+      }
+      resolve(message);
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("The Deriv trade connection failed."));
+    };
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("error", onError, { once: true });
+    try {
+      socket.send(JSON.stringify({ ...request, req_id: reqId }));
+    } catch (error) {
+      cleanup();
+      reject(error instanceof Error ? error : new Error("Could not send the trade request to Deriv."));
+    }
+  });
+}
+
+function waitForContractSettlement(
+  socket: WebSocket,
+  reqId: number,
+  contractId: string | number,
+): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    let subscriptionAccepted = false;
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.removeEventListener("message", onMessage);
+      socket.removeEventListener("error", onError);
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("The trade was placed, but Deriv did not confirm its settlement in time."));
+    }, 30_000);
+    const onMessage = (event: MessageEvent) => {
+      const message = decodeSocketMessage(event);
+      if (!message) return;
+      if (message["req_id"] === reqId) {
+        if (isRecord(message["error"])) {
+          cleanup();
+          reject(new Error("The trade was placed, but Deriv could not provide its result."));
+          return;
+        }
+        subscriptionAccepted = true;
+      }
+      if (message["msg_type"] !== "proposal_open_contract"
+        || !isRecord(message["proposal_open_contract"])) return;
+      const contract = message["proposal_open_contract"];
+      if (String(contract["contract_id"]) !== String(contractId)) return;
+      if (contract["is_sold"] === 1 || contract["is_sold"] === true) {
+        cleanup();
+        resolve(contract);
+      } else if (subscriptionAccepted && message["error"]) {
+        cleanup();
+        reject(new Error("The trade was placed, but Deriv could not provide its result."));
+      }
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("The trade was placed, but the result connection was interrupted."));
+    };
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("error", onError, { once: true });
+    socket.send(JSON.stringify({
+      proposal_open_contract: 1,
+      contract_id: contractId,
+      subscribe: 1,
+      req_id: reqId,
+    }));
+  });
+}
+
+async function executeDemoSignalTrade(
+  accessToken: string,
+  account: DerivAccountBalance,
+  trade: SignalTradeRequest,
+): Promise<{ contractId: string; profit: number }> {
+  const socket = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(APP_ID)}`);
+  let tradePlaced = false;
+  try {
+    await waitForSocketOpen(socket);
+    const authorized = await sendDerivRequest(socket, 1, { authorize: accessToken });
+    if (!isRecord(authorized["authorize"])) {
+      throw new Error("Deriv did not confirm account authorization.");
+    }
+    const accounts = authorized["authorize"]["account_list"];
+    if (Array.isArray(accounts) && !accounts.some((item) => (
+      isRecord(item) && item["loginid"] === account.accountId
+    ))) {
+      throw new Error("The selected demo account is not authorized for this session.");
+    }
+
+    const switched = await sendDerivRequest(socket, 2, {
+      switch_account: 1,
+      loginid: account.accountId,
+    });
+    if (
+      !isRecord(switched["switch_account"])
+      || switched["switch_account"]["loginid"] !== account.accountId
+    ) {
+      throw new Error("Deriv could not select the chosen demo account.");
+    }
+
+    const proposalMessage = await sendDerivRequest(
+      socket,
+      3,
+      getDerivContractParameters(trade, account.currency),
+    );
+    if (!isRecord(proposalMessage["proposal"])) {
+      throw new Error("Deriv did not return a valid contract quote.");
+    }
+    const proposal = proposalMessage["proposal"];
+    const proposalId = proposal["id"];
+    const askPrice = proposal["ask_price"];
+    if (
+      (typeof proposalId !== "string" && typeof proposalId !== "number")
+      || typeof askPrice !== "number" || !Number.isFinite(askPrice)
+      || askPrice <= 0 || askPrice > trade.stake
+    ) {
+      throw new Error("Deriv returned a quote that exceeds the configured stake.");
+    }
+
+    const buyMessage = await sendDerivRequest(socket, 4, {
+      buy: proposalId,
+      price: trade.stake,
+    });
+    if (!isRecord(buyMessage["buy"])) {
+      throw new Error("Deriv did not confirm the contract purchase.");
+    }
+    const bought = buyMessage["buy"];
+    const contractId = bought["contract_id"];
+    if (typeof contractId !== "string" && typeof contractId !== "number") {
+      throw new Error("Deriv confirmed the purchase without a contract ID.");
+    }
+    tradePlaced = true;
+
+    const settlement = await waitForContractSettlement(socket, 5, contractId);
+    const profit = settlement["profit"];
+    if (typeof profit !== "number" || !Number.isFinite(profit)) {
+      throw new Error("Deriv settled the trade without a valid profit result.");
+    }
+    return { contractId: String(contractId), profit };
+  } catch (error) {
+    if (tradePlaced) {
+      throw Object.assign(
+        error instanceof Error ? error : new Error("Deriv could not confirm the trade result."),
+        { tradePlaced: true },
+      );
+    }
+    throw error;
+  } finally {
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+      socket.close();
+    }
+  }
 }
 
 router.get("/oauth/deriv/login", (_req, res) => {
@@ -340,6 +641,152 @@ router.delete("/oauth/deriv/session", (_req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.clearCookie(ACCESS_TOKEN_COOKIE, cookieOptions("/api/oauth/deriv", 0));
   res.status(204).end();
+});
+
+router.post("/oauth/deriv/trading/execute", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const accessToken = getCookie(req, ACCESS_TOKEN_COOKIE);
+  if (!accessToken) {
+    res.status(401).json({ error: "Connect a Deriv account before trading." });
+    return;
+  }
+
+  const trade = parseSignalTradeRequest(req.body);
+  if (!trade) {
+    res.status(400).json({ error: "The signal trade settings are invalid." });
+    return;
+  }
+  let accountsResponse: globalThis.Response;
+  try {
+    accountsResponse = await validateApiToken(accessToken);
+  } catch (error) {
+    logger.error({ err: error }, "Deriv trade account verification could not reach Deriv");
+    res.status(503).json({ error: "Could not verify the Deriv account before trading." });
+    return;
+  }
+  if (accountsResponse.status === 401 || accountsResponse.status === 403) {
+    res.clearCookie(ACCESS_TOKEN_COOKIE, cookieOptions("/api/oauth/deriv", 0));
+    res.status(401).json({ error: "Deriv rejected this session. Reconnect before trading." });
+    return;
+  }
+  if (!accountsResponse.ok) {
+    logger.warn({ statusCode: accountsResponse.status }, "Deriv trade account verification failed");
+    res.status(503).json({ error: "Could not verify the Deriv account before trading." });
+    return;
+  }
+
+  let accountPayload: unknown;
+  try {
+    accountPayload = await accountsResponse.json();
+  } catch (error) {
+    logger.error({ err: error }, "Deriv returned invalid account data before trading");
+    res.status(502).json({ error: "Deriv returned an invalid account list." });
+    return;
+  }
+  const accounts = parseAccountBalances(accountPayload);
+  if (!accounts) {
+    logger.error(
+      { responseKeys: isRecord(accountPayload) ? Object.keys(accountPayload) : [] },
+      "Deriv returned an invalid account list before trading",
+    );
+    res.status(502).json({ error: "Deriv returned an invalid account list." });
+    return;
+  }
+  const account = accounts.find((item) => item.accountId === trade.accountId);
+  if (!account || account.accountType !== "demo") {
+    res.status(403).json({ error: "Automated signal trading is restricted to active Deriv demo accounts." });
+    return;
+  }
+  if (trade.stake > account.balance) {
+    res.status(400).json({ error: "The configured stake exceeds the selected demo account balance." });
+    return;
+  }
+  const session = demoTradingSessions.get(account.accountId) ?? {
+    profit: trade.sessionProfit,
+    stopped: false,
+  };
+  if (isDemoTradingSessionStopped(session, trade.takeProfit, trade.stopLoss)) {
+    demoTradingSessions.set(account.accountId, session);
+    res.status(409).json({
+      sessionStopped: true,
+      sessionProfit: session.profit,
+      error: "The configured session profit or loss limit has been reached. Reset the demo trading session before trading again.",
+    });
+    return;
+  }
+
+  if (activeTradeAccounts.has(account.accountId)) {
+    res.status(409).json({ error: "A trade is already being processed for this demo account." });
+    return;
+  }
+  activeTradeAccounts.add(account.accountId);
+  try {
+    const result = await executeDemoSignalTrade(accessToken, account, trade);
+    applyDemoTradeResult(session, result.profit, trade.takeProfit, trade.stopLoss);
+    demoTradingSessions.set(account.accountId, session);
+    res.status(200).json({
+      ...result,
+      sessionProfit: session.profit,
+      sessionStopped: session.stopped,
+    });
+  } catch (error) {
+    const tradePlaced = isRecord(error)
+      && error["tradePlaced"] === true;
+    if (tradePlaced) {
+      logger.error({ err: error, contractId: "unconfirmed" }, "Deriv trade was placed but settlement could not be confirmed");
+      res.status(502).json({
+        tradePlaced: true,
+        error: error instanceof Error
+          ? error.message
+          : "The trade was placed, but Deriv could not confirm its settlement.",
+      });
+      return;
+    }
+    logger.error({ err: error }, "Deriv rejected or failed to place the signal trade");
+    res.status(502).json({
+      error: error instanceof Error ? error.message : "Deriv could not complete the signal trade.",
+    });
+  } finally {
+    activeTradeAccounts.delete(account.accountId);
+  }
+});
+
+router.post("/oauth/deriv/trading/session/reset", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const accessToken = getCookie(req, ACCESS_TOKEN_COOKIE);
+  if (!accessToken) {
+    res.status(401).json({ error: "Connect a Deriv account before resetting its trading session." });
+    return;
+  }
+  const accountId = req.body?.accountId;
+  if (typeof accountId !== "string" || accountId.length === 0 || accountId.length > 64) {
+    res.status(400).json({ error: "Select a valid demo account." });
+    return;
+  }
+
+  try {
+    const response = await validateApiToken(accessToken);
+    if (!response.ok) {
+      res.status(response.status === 401 || response.status === 403 ? 401 : 503)
+        .json({ error: "Could not verify the Deriv account before resetting its session." });
+      return;
+    }
+    const accounts = parseAccountBalances(await response.json());
+    const account = accounts?.find((item) => item.accountId === accountId);
+    if (!account || account.accountType !== "demo") {
+      res.status(403).json({ error: "Automated signal trading sessions are restricted to active demo accounts." });
+      return;
+    }
+    if (activeTradeAccounts.has(account.accountId)) {
+      res.status(409).json({ error: "Wait for the current trade to settle before resetting the session." });
+      return;
+    }
+    demoTradingSessions.delete(account.accountId);
+    res.status(200).json({ sessionProfit: 0 });
+  } catch (error) {
+    logger.error({ err: error }, "Could not verify the Deriv account before resetting its trading session");
+    res.status(503).json({ error: "Could not verify the Deriv account before resetting its session." });
+  }
 });
 
 export default router;

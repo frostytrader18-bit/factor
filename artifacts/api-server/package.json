@@ -7,7 +7,7 @@
     "dev": "node ./build.mjs && node --enable-source-maps ./dist/server.mjs",
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/server.mjs",
-    "test:public": "node --test test/public.test.mjs test/deriv-oauth.test.mjs",
+    "test:public": "node --experimental-strip-types --test test/public.test.mjs test/deriv-oauth.test.mjs test/demo-trading-session.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

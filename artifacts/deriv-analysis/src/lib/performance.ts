@@ -22,6 +22,7 @@ export type PredictionOutcomeStart = {
   wilsonLowerBound: number;
   wilsonUpperBound: number;
   expectedValue: number | null;
+  isValidated?: boolean;
 };
 
 export type PredictionOutcomeRecord = PredictionOutcomeStart & {

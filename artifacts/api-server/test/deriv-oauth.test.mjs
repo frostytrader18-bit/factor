@@ -144,6 +144,7 @@ test("Deriv API-token login validates tokens and stores valid credentials in an 
       status: authorization === `Bearer ${submittedToken}` ? 200 : 401,
       headers: { "content-type": "application/json" },
     });
+
   };
 
   try {
@@ -185,6 +186,67 @@ test("Deriv API-token login validates tokens and stores valid credentials in an 
     assert.equal(requests.length, 3);
     assert.equal(requests[0].url.href, "https://api.derivws.com/trading/v1/options/accounts");
     assert.equal(requests[1].headers["Deriv-App-ID"], "34VWBd5pBISkAMEF3Zxm7");
+  } finally {
+    globalThis.fetch = nativeFetch;
+  }
+});
+
+test("signal trade endpoint requires an authenticated demo account and rejects real accounts", async () => {
+  const body = {
+    accountId: "CR54321",
+    contractType: "match-digit",
+    signalKey: "7",
+    marketSymbol: "R_100",
+    digit: 7,
+    stake: 1,
+    takeProfit: 10,
+    stopLoss: 5,
+    sessionProfit: 0,
+  };
+  const anonymous = await fetch(`${baseUrl}/api/oauth/deriv/trading/execute`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  assert.equal(anonymous.status, 401);
+
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin === "https://api.derivws.com") {
+      return new Response(JSON.stringify({
+        data: [
+          { account_id: "CR54321", balance: 500, currency: "USD", status: "active", account_type: "real" },
+        ],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return nativeFetch(input, init);
+  };
+
+  try {
+    const prohibited = await nativeFetch(`${baseUrl}/api/oauth/deriv/trading/execute`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: "pulsefactor_deriv_session=test-access-token",
+      },
+      body: JSON.stringify(body),
+    });
+    assert.equal(prohibited.status, 403);
+    assert.match((await prohibited.json()).error, /demo accounts/i);
+
+    const malformed = await nativeFetch(`${baseUrl}/api/oauth/deriv/trading/execute`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: "pulsefactor_deriv_session=test-access-token",
+      },
+      body: JSON.stringify({ ...body, signalKey: "8" }),
+    });
+    assert.equal(malformed.status, 400);
   } finally {
     globalThis.fetch = nativeFetch;
   }

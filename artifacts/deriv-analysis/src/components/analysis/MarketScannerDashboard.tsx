@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AlertTriangle, Play, ShieldCheck, Square } from 'lucide-react';
 import { DigitScannerView } from './DigitScannerView';
 import {
   SCANNER_PRIOR_TICK_COUNT,
@@ -11,6 +12,14 @@ import {
   type AnalysisEngineId,
 } from '@/lib/contract-engines';
 import type { PredictionOutcomeStart } from '@/lib/performance';
+import type { SignalTradingSettings } from '@/lib/signal-trading';
+
+type TradingAccount = {
+  accountId: string;
+  accountType: 'demo' | 'real';
+  balance: number;
+  currency: string;
+};
 
 type FeedStatus = 'connecting' | 'live' | 'reconnecting' | 'error';
 type ScannerSoundAlert = 'signal-found' | 'timer-ended';
@@ -27,6 +36,14 @@ type MarketScannerDashboardProps = {
   onMarketSelect: (symbol: string) => void;
   onPredictionStart: (prediction: PredictionOutcomeStart) => void;
   onSoundAlert: (alert: ScannerSoundAlert) => void;
+  tradingSettings: SignalTradingSettings;
+  selectedAccount: TradingAccount | null;
+  tradingBusy: boolean;
+  tradingStatus: string;
+  onTradingSettingsChange: (settings: SignalTradingSettings) => void;
+  onClearTradingValues: () => void;
+  onToggleTrading: () => void;
+  onResetTradingSession: () => void;
 };
 
 const SCANNER_SETTINGS_KEY = 'deriv-analysis-scanner-settings-v2';
@@ -113,6 +130,14 @@ export function MarketScannerDashboard({
   onMarketSelect,
   onPredictionStart,
   onSoundAlert,
+  tradingSettings,
+  selectedAccount,
+  tradingBusy,
+  tradingStatus,
+  onTradingSettingsChange,
+  onClearTradingValues,
+  onToggleTrading,
+  onResetTradingSession,
 }: MarketScannerDashboardProps) {
   const [settings, setSettings] = useState(readScannerSettings);
   const [settingsError, setSettingsError] = useState<string | null>(null);
@@ -147,6 +172,16 @@ export function MarketScannerDashboard({
       },
     });
   };
+  const updateTradingSetting = <K extends keyof SignalTradingSettings>(
+    key: K,
+    value: SignalTradingSettings[K],
+  ) => onTradingSettingsChange({ ...tradingSettings, [key]: value });
+  const updateMultiplier = (index: number, value: string) => {
+    const multipliers = [...tradingSettings.multipliers] as SignalTradingSettings['multipliers'];
+    multipliers[index] = value === '' ? null : Number(value);
+    onTradingSettingsChange({ ...tradingSettings, multipliers });
+  };
+  const tradingNumberClass = 'w-full rounded-md border border-[#285264] bg-[#0b202c] px-2.5 py-2 text-[11px] text-[#e1f3f5] outline-none focus:border-[#3dd5e3]';
 
   return (
     <section
@@ -245,6 +280,205 @@ export function MarketScannerDashboard({
       </div>
 
       {settingsError && <p role="alert" className="text-[9px] text-[#ffaaaa]">{settingsError}</p>}
+
+      <section
+        data-testid="signal-trading-panel"
+        aria-label="Signal trading controls"
+        className="rounded-xl border border-[#356f70]/70 bg-[linear-gradient(145deg,rgba(13,42,45,.8),rgba(9,23,34,.95))] p-3 sm:p-4"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-2.5">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-[#36a995]/40 bg-[#103b36] text-[#77e6ce]">
+              <ShieldCheck size={16} />
+            </span>
+            <div className="min-w-0">
+              <h3 className="font-display text-[11px] font-extrabold tracking-[.08em] text-[#e4f2ee]">SIGNAL TRADING</h3>
+              <p className="mt-1 text-[9px] leading-relaxed text-[#8fa7a7]">
+                Demo-only automation · one open order at a time · session profit/loss limits stop new orders.
+              </p>
+            </div>
+          </div>
+          <span className={`rounded-full border px-2.5 py-1 font-mono-ui text-[8px] font-extrabold tracking-wider ${
+            tradingSettings.armed
+              ? 'border-[#33a786]/60 bg-[#103b32] text-[#86edc4]'
+              : 'border-[#49606b] bg-[#182630] text-[#a3b3bc]'
+          }`}>
+            {tradingSettings.armed ? 'ARMED · DEMO' : 'DISARMED'}
+          </span>
+        </div>
+
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          <label className="space-y-1">
+            <span className="block font-mono-ui text-[8px] font-bold tracking-wider text-[#83b6b3]">STAKE · {selectedAccount?.currency || 'ACCOUNT CURRENCY'}</span>
+            <input
+              type="number"
+              min="0.35"
+              max={selectedAccount?.balance ?? 10000}
+              step="0.01"
+              value={tradingSettings.stake ?? ''}
+              placeholder="Enter stake"
+              onChange={(event) => updateTradingSetting(
+                'stake',
+                event.currentTarget.value === '' ? null : Number(event.currentTarget.value),
+              )}
+              disabled={tradingSettings.armed || tradingBusy}
+              data-testid="input-trading-stake"
+              aria-label="Trade stake"
+              className={tradingNumberClass}
+            />
+          </label>
+          <label className="space-y-1">
+            <span className="block font-mono-ui text-[8px] font-bold tracking-wider text-[#83b6b3]">TAKE PROFIT</span>
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={tradingSettings.takeProfit ?? ''}
+              placeholder="Enter limit"
+              onChange={(event) => updateTradingSetting(
+                'takeProfit',
+                event.currentTarget.value === '' ? null : Number(event.currentTarget.value),
+              )}
+              disabled={tradingSettings.armed || tradingBusy}
+              data-testid="input-trading-take-profit"
+              aria-label="Session take profit"
+              className={tradingNumberClass}
+            />
+          </label>
+          <label className="space-y-1">
+            <span className="block font-mono-ui text-[8px] font-bold tracking-wider text-[#83b6b3]">STOP LOSS</span>
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={tradingSettings.stopLoss ?? ''}
+              placeholder="Enter limit"
+              onChange={(event) => updateTradingSetting(
+                'stopLoss',
+                event.currentTarget.value === '' ? null : Number(event.currentTarget.value),
+              )}
+              disabled={tradingSettings.armed || tradingBusy}
+              data-testid="input-trading-stop-loss"
+              aria-label="Session stop loss"
+              className={tradingNumberClass}
+            />
+          </label>
+        </div>
+
+        <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+          <label className="space-y-1">
+            <span className="block font-mono-ui text-[8px] font-bold tracking-wider text-[#83b6b3]">MULTIPLIER LEVEL</span>
+            <select
+              value={tradingSettings.multiplierLevel}
+              onChange={(event) => {
+                const level = Number(event.currentTarget.value);
+                if (level === 1 || level === 2 || level === 3) {
+                  updateTradingSetting('multiplierLevel', level);
+                }
+              }}
+              disabled={tradingSettings.armed || tradingBusy}
+              data-testid="select-trading-multiplier-level"
+              aria-label="Multiplier level"
+              className={tradingNumberClass}
+            >
+              <option value="1">LEVEL 1</option>
+              <option value="2">LEVEL 2</option>
+              <option value="3">LEVEL 3</option>
+            </select>
+          </label>
+          <div className="space-y-1">
+            <span className="block font-mono-ui text-[8px] font-bold tracking-wider text-[#83b6b3]">LEVEL FACTORS · OPTIONAL</span>
+            <div className="grid grid-cols-3 gap-1.5">
+              {tradingSettings.multipliers.map((multiplier, index) => (
+                <label key={index} className="relative">
+                  <span className="sr-only">Level {index + 1} multiplier factor</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    step="0.1"
+                    value={multiplier ?? ''}
+                    onChange={(event) => updateMultiplier(index, event.currentTarget.value)}
+                    disabled={tradingSettings.armed || tradingBusy}
+                    data-testid={`input-trading-multiplier-${index + 1}`}
+                    aria-label={`Level ${index + 1} multiplier factor`}
+                    placeholder={`L${index + 1} · off`}
+                    className={tradingNumberClass}
+                  />
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#273f4a] bg-[#0a1821]/80 px-3 py-2">
+          <div className="min-w-0">
+            <p className="font-mono-ui text-[8px] font-bold tracking-wider text-[#9bb4b6]">SESSION RESULT</p>
+            <p className={`mt-0.5 font-mono-ui text-[11px] font-extrabold tabular-nums ${
+              tradingSettings.sessionProfit >= 0 ? 'text-[#86edc4]' : 'text-[#ffaaa0]'
+            }`}>
+              {tradingSettings.sessionProfit.toFixed(2)} {selectedAccount?.currency ?? ''}
+              <span className="ml-1 text-[8px] font-medium text-[#82979f]">
+                · TP {tradingSettings.takeProfit ?? '—'} / SL {tradingSettings.stopLoss ?? '—'}
+              </span>
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onResetTradingSession}
+            disabled={tradingSettings.armed || tradingBusy}
+            data-testid="button-reset-trading-session"
+            className="rounded-md border border-[#38505d] bg-[#14242e] px-2.5 py-1.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#a8c0c6] transition hover:border-[#4c8990] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            RESET SESSION
+          </button>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onClearTradingValues}
+            disabled={tradingSettings.armed || tradingBusy}
+            data-testid="button-clear-trading-values"
+            className="flex min-h-9 items-center justify-center rounded-lg border border-[#38505d] bg-[#14242e] px-3 py-2 font-mono-ui text-[9px] font-bold tracking-wider text-[#a8c0c6] transition hover:border-[#4c8990] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            CLEAR VALUES
+          </button>
+          <button
+            type="button"
+            onClick={onToggleTrading}
+            disabled={tradingBusy || (tradingSettings.armed && selectedAccount?.accountType !== 'demo')}
+            aria-pressed={tradingSettings.armed}
+            data-testid="toggle-signal-trading"
+            className={`flex min-h-9 items-center justify-center gap-2 rounded-lg border px-3 py-2 font-mono-ui text-[9px] font-extrabold tracking-wider transition disabled:cursor-not-allowed disabled:opacity-50 ${
+              tradingSettings.armed
+                ? 'border-[#ac564f]/70 bg-[#412423] text-[#ffb5a7] hover:bg-[#542a27]'
+                : 'border-[#1e9e83]/70 bg-[#0d3a31] text-[#8ce9c7] hover:border-[#42c5a5] hover:bg-[#10493c]'
+            }`}
+          >
+            {tradingSettings.armed ? <Square size={12} /> : <Play size={12} />}
+            {tradingSettings.armed ? 'DISARM AUTO-TRADING' : 'ARM DEMO AUTO-TRADING'}
+          </button>
+          {selectedAccount && (
+            <span className={`font-mono-ui text-[8px] font-bold tracking-wider ${
+              selectedAccount.accountType === 'demo' ? 'text-[#84e4bd]' : 'text-[#f1c778]'
+            }`}>
+              {selectedAccount.accountType.toUpperCase()} · BALANCE {selectedAccount.balance.toFixed(2)} {selectedAccount.currency}
+            </span>
+          )}
+        </div>
+        <p
+          role={tradingStatus.startsWith('ERROR') ? 'alert' : 'status'}
+          aria-live="polite"
+          data-testid="text-trading-status"
+          className="mt-2 flex items-start gap-1.5 text-[9px] leading-relaxed text-[#9bb1b6]"
+        >
+          <AlertTriangle size={11} className="mt-0.5 shrink-0 text-[#d9ba78]" />
+          {tradingStatus || (selectedAccount?.accountType === 'demo'
+            ? 'Select your stake and session limits. Multiplier factors are optional and blank levels use the base stake.'
+            : 'Select a Deriv demo account in the balance menu to enable automated trading. Real-account trades are disabled.')}
+        </p>
+      </section>
 
       <DigitScannerView
         markets={markets}
