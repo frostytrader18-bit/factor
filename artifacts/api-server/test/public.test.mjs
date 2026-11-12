@@ -98,7 +98,7 @@ test("app page and assets are publicly available without a login", async () => {
   assert.match(bundle, /\/icons\/pulsefactor-192\.png/);
   assert.match(bundle, /https:\/\/pulsefactor\.space\//);
   assert.match(bundle, /DERIV LOGIN/);
-  assert.match(bundle, /button-api-token-login/);
+  assert.doesNotMatch(bundle, /button-api-token-login/);
   assert.match(bundle, /data-account-selector/);
   assert.match(bundle, /SWITCH ACCOUNT/);
   assert.match(bundle, /REAL ACCOUNT/);
