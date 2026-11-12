@@ -5,7 +5,7 @@ import test, { after } from "node:test";
 
 process.env.NODE_ENV = "test";
 process.env.DERIV_APP_ID = "34VWBd5pBISkAMEF3Zxm7";
-process.env.DERIV_REDIRECT_URI = "https://pulsefactor.space/oauth/callback";
+process.env.DERIV_REDIRECT_URI = "https://pulsefactor.space";
 
 const { default: app } = await import("../dist/index.mjs");
 const server = app.listen(0, "127.0.0.1");
@@ -67,7 +67,7 @@ test("Deriv login uses PKCE and exchanges the callback code server-side", async 
     assert.ok(verifierCookie);
     assert.match(verifierCookie, /HttpOnly/i);
     assert.match(verifierCookie, /SameSite=Lax/i);
-    assert.match(verifierCookie, /Path=\/oauth\/callback/i);
+    assert.match(verifierCookie, /Path=\//i);
 
     const [cookieState, verifier] = decodeURIComponent(verifierCookie.split(";")[0].split("=")[1]).split(".");
     assert.equal(cookieState, state);
@@ -77,7 +77,7 @@ test("Deriv login uses PKCE and exchanges the callback code server-side", async 
     );
 
     const callback = await nativeFetch(
-      `${baseUrl}/oauth/callback?code=one-time-code&state=${encodeURIComponent(state)}`,
+      `${baseUrl}/?code=one-time-code&state=${encodeURIComponent(state)}`,
       {
         headers: { cookie: verifierCookie.split(";")[0] },
         redirect: "manual",
@@ -91,7 +91,7 @@ test("Deriv login uses PKCE and exchanges the callback code server-side", async 
     assert.equal(tokenRequest?.body.get("grant_type"), "authorization_code");
     assert.equal(tokenRequest?.body.get("client_id"), "34VWBd5pBISkAMEF3Zxm7");
     assert.equal(tokenRequest?.body.get("code"), "one-time-code");
-    assert.equal(tokenRequest?.body.get("redirect_uri"), "https://pulsefactor.space/oauth/callback");
+    assert.equal(tokenRequest?.body.get("redirect_uri"), "https://pulsefactor.space");
     assert.equal(tokenRequest?.body.get("code_verifier"), verifier);
 
     const cookies = callback.headers.getSetCookie();
@@ -208,7 +208,7 @@ test("Deriv callback rejects state mismatches without exchanging a code", async 
   assert.ok(stateCookie);
 
   const callback = await fetch(
-    `${baseUrl}/oauth/callback?code=one-time-code&state=wrong-state`,
+    `${baseUrl}/?code=one-time-code&state=wrong-state`,
     {
       headers: { cookie: stateCookie.split(";")[0] },
       redirect: "manual",
@@ -225,7 +225,7 @@ test("Deriv callback reports when the OAuth app lacks the requested trade scope"
   const [state] = decodeURIComponent(stateCookie.split(";")[0].split("=")[1]).split(".");
 
   const callback = await fetch(
-    `${baseUrl}/oauth/callback?error=invalid_scope&state=${encodeURIComponent(state)}`,
+    `${baseUrl}/?error=invalid_scope&state=${encodeURIComponent(state)}`,
     {
       headers: { cookie: stateCookie.split(";")[0] },
       redirect: "manual",

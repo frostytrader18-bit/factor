@@ -16,7 +16,7 @@ const AUTHORIZATION_URL = "https://auth.deriv.com/oauth2/auth";
 const TOKEN_URL = "https://auth.deriv.com/oauth2/token";
 const STATE_COOKIE = "pulsefactor_deriv_oauth";
 const ACCESS_TOKEN_COOKIE = "pulsefactor_deriv_session";
-const CALLBACK_PATH = "/oauth/callback";
+export const DERIV_CALLBACK_PATH = new URL(CALLBACK_URL).pathname;
 const OAUTH_COOKIE_TTL_MS = 10 * 60 * 1000;
 
 const router = Router();
@@ -119,7 +119,7 @@ router.get("/oauth/deriv/login", (_req, res) => {
   authorizationUrl.searchParams.set("code_challenge_method", "S256");
 
   res.setHeader("Cache-Control", "no-store");
-  res.cookie(STATE_COOKIE, `${state}.${verifier}`, cookieOptions(CALLBACK_PATH, OAUTH_COOKIE_TTL_MS));
+  res.cookie(STATE_COOKIE, `${state}.${verifier}`, cookieOptions(DERIV_CALLBACK_PATH, OAUTH_COOKIE_TTL_MS));
   res.redirect(302, authorizationUrl.toString());
 });
 
@@ -177,7 +177,7 @@ export async function handleDerivOAuthCallback(req: Request, res: Response): Pro
   res.setHeader("Cache-Control", "no-store");
 
   const stateCookie = getCookie(req, STATE_COOKIE);
-  res.clearCookie(STATE_COOKIE, cookieOptions(CALLBACK_PATH, 0));
+  res.clearCookie(STATE_COOKIE, cookieOptions(DERIV_CALLBACK_PATH, 0));
   const [cookieState, verifier, extra] = stateCookie?.split(".") ?? [];
   const returnedState = req.query["state"];
   if (

@@ -4,7 +4,7 @@ import cors from "cors";
 import pinoHttp from "pino-http";
 import { fileURLToPath } from "node:url";
 import router from "./routes";
-import { handleDerivOAuthCallback } from "./routes/deriv-oauth";
+import { DERIV_CALLBACK_PATH, handleDerivOAuthCallback } from "./routes/deriv-oauth";
 import { logger } from "./lib/logger";
 
 const app: Express = express();
@@ -43,7 +43,16 @@ app.use(express.json({ limit: "16kb" }));
 app.use(express.urlencoded({ extended: true, limit: "4kb" }));
 
 app.use("/api", router);
-app.get("/oauth/callback", (req, res, next) => {
+app.get(DERIV_CALLBACK_PATH, (req, res, next) => {
+  if (
+    DERIV_CALLBACK_PATH === "/"
+    && req.query["state"] === undefined
+    && req.query["code"] === undefined
+    && req.query["error"] === undefined
+  ) {
+    next();
+    return;
+  }
   void handleDerivOAuthCallback(req, res).catch(next);
 });
 
