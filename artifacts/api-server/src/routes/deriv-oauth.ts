@@ -63,6 +63,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+type DerivAccountBalance = {
+  accountType: "demo" | "real";
+  balance: number;
+  currency: string;
+};
+
+function parseAccountBalances(payload: unknown): DerivAccountBalance[] | null {
+  if (!isRecord(payload) || !Array.isArray(payload["data"])) return null;
+
+  const accounts: DerivAccountBalance[] = [];
+  for (const account of payload["data"]) {
+    if (!isRecord(account)) return null;
+    if (account["status"] !== "active") continue;
+    const accountType = account["account_type"];
+    const balance = account["balance"];
+    const currency = account["currency"];
+    if (
+      (accountType !== "demo" && accountType !== "real")
+      || typeof balance !== "number"
+      || !Number.isFinite(balance)
+      || balance < 0
+      || typeof currency !== "string"
+      || !/^[A-Za-z0-9]{2,20}$/.test(currency)
+    ) {
+      return null;
+    }
+    accounts.push({ accountType, balance, currency });
+  }
+  return accounts;
+}
+
 async function validateApiToken(token: string): Promise<globalThis.Response> {
   return fetch("https://api.derivws.com/trading/v1/options/accounts", {
     headers: {
@@ -82,7 +113,7 @@ router.get("/oauth/deriv/login", (_req, res) => {
   authorizationUrl.searchParams.set("response_type", "code");
   authorizationUrl.searchParams.set("client_id", APP_ID);
   authorizationUrl.searchParams.set("redirect_uri", CALLBACK_URL);
-  authorizationUrl.searchParams.set("scope", "application_read");
+  authorizationUrl.searchParams.set("scope", "trade");
   authorizationUrl.searchParams.set("state", state);
   authorizationUrl.searchParams.set("code_challenge", challenge);
   authorizationUrl.searchParams.set("code_challenge_method", "S256");
@@ -124,8 +155,22 @@ router.post("/oauth/deriv/token", async (req, res) => {
     return;
   }
 
+  let accounts: DerivAccountBalance[] | null;
+  try {
+    accounts = parseAccountBalances(await response.json());
+  } catch (error) {
+    logger.error({ err: error }, "Deriv API token verification returned invalid account data");
+    res.status(502).json({ error: "Deriv returned an invalid account list." });
+    return;
+  }
+  if (!accounts) {
+    logger.error("Deriv API token verification returned an invalid account list");
+    res.status(502).json({ error: "Deriv returned an invalid account list." });
+    return;
+  }
+
   res.cookie(ACCESS_TOKEN_COOKIE, token, cookieOptions("/api/oauth/deriv"));
-  res.status(200).json({ authenticated: true });
+  res.status(200).json({ authenticated: true, accounts });
 });
 
 export async function handleDerivOAuthCallback(req: Request, res: Response): Promise<void> {
@@ -147,7 +192,15 @@ export async function handleDerivOAuthCallback(req: Request, res: Response): Pro
   }
 
   if (typeof req.query["error"] === "string") {
-    redirectWithError(res, "authorization_denied");
+    const error = req.query["error"];
+    redirectWithError(
+      res,
+      error === "invalid_scope"
+        ? "invalid_scope"
+        : error === "access_denied"
+          ? "authorization_denied"
+          : "authorization_failed",
+    );
     return;
   }
 
@@ -223,6 +276,13 @@ router.get("/oauth/deriv/session", async (req, res) => {
     const response = await validateApiToken(accessToken);
     if (response.status === 401 || response.status === 403) {
       res.clearCookie(ACCESS_TOKEN_COOKIE, cookieOptions("/api/oauth/deriv", 0));
+      if (response.status === 403) {
+        res.status(403).json({
+          authenticated: false,
+          error: "Deriv account access is not enabled. Reconnect and approve the trade permission.",
+        });
+        return;
+      }
       res.status(401).json({ authenticated: false });
       return;
     }
@@ -231,13 +291,21 @@ router.get("/oauth/deriv/session", async (req, res) => {
       res.status(503).json({ error: "Deriv login status is temporarily unavailable." });
       return;
     }
+    const accounts = parseAccountBalances(await response.json());
+    if (!accounts) {
+      logger.error("Deriv accounts response did not contain an account list");
+      res.status(502).json({ error: "Deriv returned an invalid account list." });
+      return;
+    }
+
+    res.status(200).json({ authenticated: true, accounts });
+    return;
   } catch (error) {
     logger.error({ err: error }, "Deriv session verification could not reach Deriv");
     res.status(503).json({ error: "Deriv login status is temporarily unavailable." });
     return;
   }
 
-  res.status(200).json({ authenticated: true });
 });
 
 router.delete("/oauth/deriv/session", (_req, res) => {

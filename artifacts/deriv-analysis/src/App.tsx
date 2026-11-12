@@ -110,6 +110,42 @@ function playTone(context: AudioContext, alert: ScannerSoundAlert) {
 }
 
 type WorkspaceTheme = 'arctic' | 'nebula' | 'solar' | 'biolume' | 'lunar';
+type DerivAccountBalance = {
+  accountType: 'demo' | 'real';
+  balance: number;
+  currency: string;
+};
+
+function parseDerivAccountBalances(value: unknown): DerivAccountBalance[] {
+  if (!value || typeof value !== 'object' || !('accounts' in value) || !Array.isArray(value.accounts)) {
+    throw new Error('Deriv account response did not contain balances.');
+  }
+
+  return value.accounts.map((account) => {
+    if (
+      !account
+      || typeof account !== 'object'
+      || !('accountType' in account)
+      || (account.accountType !== 'demo' && account.accountType !== 'real')
+      || !('balance' in account)
+      || typeof account.balance !== 'number'
+      || !Number.isFinite(account.balance)
+      || account.balance < 0
+      || !('currency' in account)
+      || typeof account.currency !== 'string'
+      || !/^[A-Za-z0-9]{2,20}$/.test(account.currency)
+    ) {
+      throw new Error('Deriv account response contained an invalid balance.');
+    }
+
+    return {
+      accountType: account.accountType,
+      balance: account.balance,
+      currency: account.currency,
+    };
+  });
+}
+
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
@@ -243,6 +279,8 @@ function Home() {
   const { marketSymbol, autoScan, soundAlertsEnabled } = appPreferences;
   const [notice, setNotice] = useState('');
   const [derivConnected, setDerivConnected] = useState(false);
+  const [derivAccounts, setDerivAccounts] = useState<DerivAccountBalance[]>([]);
+  const [selectedDerivAccount, setSelectedDerivAccount] = useState(0);
   const [apiTokenDialogOpen, setApiTokenDialogOpen] = useState(false);
   const [apiTokenInput, setApiTokenInput] = useState('');
   const [apiTokenError, setApiTokenError] = useState('');
@@ -286,6 +324,8 @@ function Home() {
     if (oauthError) {
       const messages: Record<string, string> = {
         authorization_denied: 'Deriv sign-in was cancelled.',
+        authorization_failed: 'Deriv could not authorize this sign-in request.',
+        invalid_scope: 'Enable the trade permission for this OAuth app in Deriv, then sign in again.',
         invalid_callback: 'Deriv returned an incomplete sign-in response. Please try again.',
         invalid_state: 'Deriv sign-in could not be verified. Please try again.',
         token_exchange_failed: 'Deriv could not complete sign-in. Please try again.',
@@ -297,21 +337,36 @@ function Home() {
     void fetch('/api/oauth/deriv/session', { cache: 'no-store' })
       .then(async (response) => {
         if (response.status === 401) {
-          if (active) setDerivConnected(false);
+          if (active) {
+            setDerivConnected(false);
+            setDerivAccounts([]);
+          }
           return;
         }
         if (!response.ok) {
-          throw new Error(`Deriv session check failed with HTTP ${response.status}.`);
+          const result: unknown = await response.json();
+          const message = result
+            && typeof result === 'object'
+            && 'error' in result
+            && typeof result.error === 'string'
+            ? result.error
+            : `Deriv session check failed with HTTP ${response.status}.`;
+          throw new Error(message);
         }
         const result: unknown = await response.json();
         if (!result || typeof result !== 'object' || !('authenticated' in result) || result.authenticated !== true) {
           throw new Error('Deriv session check returned an invalid response.');
         }
-        if (active) setDerivConnected(true);
+        const accounts = parseDerivAccountBalances(result);
+        if (active) {
+          setDerivAccounts(accounts);
+          setSelectedDerivAccount((current) => Math.min(current, Math.max(accounts.length - 1, 0)));
+          setDerivConnected(true);
+        }
       })
       .catch((error: unknown) => {
         console.error('Unable to check the Deriv login session.', error);
-        if (active) setNotice('Deriv login status is temporarily unavailable.');
+        if (active) setNotice(error instanceof Error ? error.message : 'Deriv login status is temporarily unavailable.');
       });
 
     return () => {
@@ -626,6 +681,9 @@ function Home() {
         throw new Error('Deriv API token verification returned an invalid response.');
       }
 
+      const accounts = parseDerivAccountBalances(result);
+      setDerivAccounts(accounts);
+      setSelectedDerivAccount(0);
       setApiTokenDialogOpen(false);
       setDerivConnected(true);
       setNotice('Connected to Deriv with an API token.');
@@ -1328,6 +1386,7 @@ function Home() {
   const recentPredictionOutcomes = [...predictionOutcomes]
     .sort((left, right) => right.startedAt - left.startedAt)
     .slice(0, 8);
+  const selectedAccount = derivAccounts[selectedDerivAccount];
   return (
     <main className="dashboard-backdrop min-h-[100dvh] px-3 pb-8 pt-3 text-[#dce6ef] sm:px-3 sm:pt-4">
       <div className="mx-auto max-w-[1440px]">
@@ -1348,6 +1407,7 @@ function Home() {
                     .then((response) => {
                       if (!response.ok) throw new Error(`Deriv logout failed with HTTP ${response.status}.`);
                       setDerivConnected(false);
+                      setDerivAccounts([]);
                       setNotice('Disconnected from Deriv.');
                     })
                     .catch((error: unknown) => {
@@ -1364,6 +1424,30 @@ function Home() {
               <a href="/api/oauth/deriv/login" data-testid="button-deriv-login" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#7651bc]/70 bg-[#261b3d]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#d5b9ff] transition hover:border-[#ad7cff] hover:bg-[#352255] sm:px-3">
                 <LogIn size={13} /> DERIV LOGIN
               </a>
+            )}
+            {derivConnected && selectedAccount && (
+              <div data-testid="status-deriv-balance" className="flex h-9 items-center gap-2 rounded-lg border border-[#24766f]/55 bg-[#0d302d]/75 px-2.5">
+                {derivAccounts.length > 1 ? (
+                  <select
+                    aria-label="Deriv trading account"
+                    data-testid="select-deriv-account"
+                    value={selectedDerivAccount}
+                    onChange={(event) => setSelectedDerivAccount(Number(event.target.value))}
+                    className="max-w-24 bg-transparent font-mono-ui text-[8px] font-bold text-[#87d9cb] outline-none"
+                  >
+                    {derivAccounts.map((account, index) => (
+                      <option key={`${account.accountType}-${account.currency}-${index}`} value={index} className="bg-[#07141f]">
+                        {account.accountType.toUpperCase()} {account.currency}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="font-mono-ui text-[8px] font-bold text-[#87d9cb]">{selectedAccount.accountType.toUpperCase()}</span>
+                )}
+                <span className="font-mono-ui text-[10px] font-bold text-[#e2f4e9]" data-testid="text-deriv-balance">
+                  {new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(selectedAccount.balance)} {selectedAccount.currency}
+                </span>
+              </div>
             )}
             <button type="button" onClick={() => { setApiTokenError(''); setApiTokenDialogOpen(true); }} data-testid="button-api-token-login" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#276e79]/70 bg-[#102c35]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#9be7ef] transition hover:border-[#54d8d6] hover:bg-[#164348] sm:px-3">
               <KeyRound size={13} /> API TOKEN

@@ -41,6 +41,7 @@ test("app page and assets are publicly available without a login", async () => {
   assert.equal(oauthUrl.searchParams.get("client_id"), "34VWBd5pBISkAMEF3Zxm7");
   assert.equal(oauthUrl.searchParams.get("redirect_uri"), "https://pulsefactor.space/oauth/callback");
   assert.equal(oauthUrl.searchParams.get("response_type"), "code");
+  assert.equal(oauthUrl.searchParams.get("scope"), "trade");
   assert.equal(oauthUrl.searchParams.get("code_challenge_method"), "S256");
 
   const manifestResponse = await fetch(`${baseUrl}/manifest.webmanifest`);
@@ -82,6 +83,8 @@ test("app page and assets are publicly available without a login", async () => {
   assert.match(bundle, /https:\/\/pulsefactor\.space\//);
   assert.match(bundle, /DERIV LOGIN/);
   assert.match(bundle, /button-api-token-login/);
+  assert.match(bundle, /status-deriv-balance/);
+  assert.match(bundle, /text-deriv-balance/);
   assert.match(bundle, /CONNECT WITH API TOKEN/);
   assert.match(bundle, /api\/oauth\/deriv\/token/);
   assert.match(bundle, /SIGN UP/);

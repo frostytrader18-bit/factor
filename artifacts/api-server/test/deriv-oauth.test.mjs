@@ -31,7 +31,12 @@ test("Deriv login uses PKCE and exchanges the callback code server-side", async 
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.origin === "https://api.derivws.com") {
       accountsRequest = { url, headers: init?.headers };
-      return new Response(JSON.stringify({ accounts: [] }), {
+      return new Response(JSON.stringify({
+        data: [
+          { account_id: "CR12345", balance: 123.45, currency: "USD", group: "demo", status: "active", account_type: "demo" },
+          { account_id: "CR54321", balance: 0, currency: "USD", group: "real", status: "inactive", account_type: "real" },
+        ],
+      }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -100,7 +105,10 @@ test("Deriv login uses PKCE and exchanges the callback code server-side", async 
       headers: { cookie: sessionCookie.split(";")[0] },
     });
     assert.equal(session.status, 200);
-    assert.deepEqual(await session.json(), { authenticated: true });
+    assert.deepEqual(await session.json(), {
+      authenticated: true,
+      accounts: [{ accountType: "demo", balance: 123.45, currency: "USD" }],
+    });
     assert.equal(accountsRequest?.url.href, "https://api.derivws.com/trading/v1/options/accounts");
     assert.equal(accountsRequest?.headers?.Authorization, "Bearer test-deriv-access-token");
     assert.equal(accountsRequest?.headers?.["Deriv-App-ID"], "34VWBd5pBISkAMEF3Zxm7");
@@ -128,7 +136,11 @@ test("Deriv API-token login validates tokens and stores valid credentials in an 
 
     requests.push({ url, headers: init?.headers });
     const authorization = new Headers(init?.headers).get("Authorization");
-    return new Response(JSON.stringify({ accounts: [] }), {
+    return new Response(JSON.stringify({
+      data: [
+        { account_id: "CR12345", balance: 123.45, currency: "USD", group: "demo", status: "active", account_type: "demo" },
+      ],
+    }), {
       status: authorization === `Bearer ${submittedToken}` ? 200 : 401,
       headers: { "content-type": "application/json" },
     });
@@ -149,7 +161,10 @@ test("Deriv API-token login validates tokens and stores valid credentials in an 
       body: JSON.stringify({ token: submittedToken }),
     });
     assert.equal(connected.status, 200);
-    assert.deepEqual(await connected.json(), { authenticated: true });
+    assert.deepEqual(await connected.json(), {
+      authenticated: true,
+      accounts: [{ accountType: "demo", balance: 123.45, currency: "USD" }],
+    });
     assert.equal(connected.headers.get("cache-control"), "no-store");
     const cookie = connected.headers.getSetCookie()
       .find((value) => value.startsWith("pulsefactor_deriv_session="));
@@ -163,7 +178,10 @@ test("Deriv API-token login validates tokens and stores valid credentials in an 
       headers: { cookie: cookie.split(";")[0] },
     });
     assert.equal(session.status, 200);
-    assert.deepEqual(await session.json(), { authenticated: true });
+    assert.deepEqual(await session.json(), {
+      authenticated: true,
+      accounts: [{ accountType: "demo", balance: 123.45, currency: "USD" }],
+    });
     assert.equal(requests.length, 3);
     assert.equal(requests[0].url.href, "https://api.derivws.com/trading/v1/options/accounts");
     assert.equal(requests[1].headers["Deriv-App-ID"], "34VWBd5pBISkAMEF3Zxm7");
@@ -198,4 +216,21 @@ test("Deriv callback rejects state mismatches without exchanging a code", async 
   );
   assert.equal(callback.status, 303);
   assert.match(callback.headers.get("location") ?? "", /deriv_oauth_error=invalid_state/);
+});
+
+test("Deriv callback reports when the OAuth app lacks the requested trade scope", async () => {
+  const login = await fetch(`${baseUrl}/api/oauth/deriv/login`, { redirect: "manual" });
+  const stateCookie = login.headers.get("set-cookie");
+  assert.ok(stateCookie);
+  const [state] = decodeURIComponent(stateCookie.split(";")[0].split("=")[1]).split(".");
+
+  const callback = await fetch(
+    `${baseUrl}/oauth/callback?error=invalid_scope&state=${encodeURIComponent(state)}`,
+    {
+      headers: { cookie: stateCookie.split(";")[0] },
+      redirect: "manual",
+    },
+  );
+  assert.equal(callback.status, 303);
+  assert.match(callback.headers.get("location") ?? "", /deriv_oauth_error=invalid_scope/);
 });
