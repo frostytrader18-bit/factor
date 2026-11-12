@@ -1449,12 +1449,16 @@ function Home() {
                 </span>
               </div>
             )}
-            <button type="button" onClick={() => { setApiTokenError(''); setApiTokenDialogOpen(true); }} data-testid="button-api-token-login" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#276e79]/70 bg-[#102c35]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#9be7ef] transition hover:border-[#54d8d6] hover:bg-[#164348] sm:px-3">
-              <KeyRound size={13} /> API TOKEN
-            </button>
-            <a href={DERIV_SIGNUP_URL} target="_blank" rel="noopener noreferrer" data-testid="button-deriv-signup" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#d6ad51]/60 bg-[#342918]/75 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#f3d982] transition hover:border-[#ffdc72] hover:bg-[#4a381d] sm:px-3">
-              <UserPlus size={13} /> SIGN UP
-            </a>
+            {!derivConnected && (
+              <>
+                <button type="button" onClick={() => { setApiTokenError(''); setApiTokenDialogOpen(true); }} data-testid="button-api-token-login" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#276e79]/70 bg-[#102c35]/80 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#9be7ef] transition hover:border-[#54d8d6] hover:bg-[#164348] sm:px-3">
+                  <KeyRound size={13} /> API TOKEN
+                </button>
+                <a href={DERIV_SIGNUP_URL} target="_blank" rel="noopener noreferrer" data-testid="button-deriv-signup" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#d6ad51]/60 bg-[#342918]/75 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#f3d982] transition hover:border-[#ffdc72] hover:bg-[#4a381d] sm:px-3">
+                  <UserPlus size={13} /> SIGN UP
+                </a>
+              </>
+            )}
             {!isAppInstalled && (
               <button type="button" onClick={installApp} data-testid="button-install-app" className="flex h-9 items-center gap-1.5 rounded-lg border border-[#1c7778]/60 bg-[#103334]/70 px-2.5 font-mono-ui text-[8px] font-bold tracking-wider text-[#71e2d6] transition hover:border-[#54d8d6] hover:bg-[#164348] sm:px-3">
                 <Download size={13} /> INSTALL APP
