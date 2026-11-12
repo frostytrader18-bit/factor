@@ -1445,7 +1445,7 @@ function Home() {
                   <span className="font-mono-ui text-[8px] font-bold text-[#87d9cb]">{selectedAccount.accountType.toUpperCase()}</span>
                 )}
                 <span className="font-mono-ui text-[10px] font-bold text-[#e2f4e9]" data-testid="text-deriv-balance">
-                  {new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(selectedAccount.balance)} {selectedAccount.currency}
+                  {new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(selectedAccount.balance)} {selectedAccount.currency || 'units'}
                 </span>
               </div>
             )}

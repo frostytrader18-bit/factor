@@ -69,11 +69,21 @@ type DerivAccountBalance = {
   currency: string;
 };
 
+function getAccountRows(payload: unknown): unknown[] | null {
+  if (!isRecord(payload)) return null;
+  const data = payload["data"];
+  if (Array.isArray(data)) return data;
+  if (isRecord(data) && Array.isArray(data["accounts"])) return data["accounts"];
+  if (Array.isArray(payload["accounts"])) return payload["accounts"];
+  return null;
+}
+
 function parseAccountBalances(payload: unknown): DerivAccountBalance[] | null {
-  if (!isRecord(payload) || !Array.isArray(payload["data"])) return null;
+  const rows = getAccountRows(payload);
+  if (!rows) return null;
 
   const accounts: DerivAccountBalance[] = [];
-  for (const account of payload["data"]) {
+  for (const account of rows) {
     if (!isRecord(account)) return null;
     if (account["status"] !== "active") continue;
     const accountType = account["account_type"];
@@ -85,7 +95,7 @@ function parseAccountBalances(payload: unknown): DerivAccountBalance[] | null {
       || !Number.isFinite(balance)
       || balance < 0
       || typeof currency !== "string"
-      || !/^[A-Za-z0-9]{2,20}$/.test(currency)
+      || currency.length > 20
     ) {
       return null;
     }
@@ -155,16 +165,20 @@ router.post("/oauth/deriv/token", async (req, res) => {
     return;
   }
 
-  let accounts: DerivAccountBalance[] | null;
+  let payload: unknown;
   try {
-    accounts = parseAccountBalances(await response.json());
+    payload = await response.json();
   } catch (error) {
     logger.error({ err: error }, "Deriv API token verification returned invalid account data");
     res.status(502).json({ error: "Deriv returned an invalid account list." });
     return;
   }
+  const accounts = parseAccountBalances(payload);
   if (!accounts) {
-    logger.error("Deriv API token verification returned an invalid account list");
+    logger.error(
+      { responseKeys: isRecord(payload) ? Object.keys(payload) : [] },
+      "Deriv API token verification returned an invalid account list",
+    );
     res.status(502).json({ error: "Deriv returned an invalid account list." });
     return;
   }
@@ -291,9 +305,13 @@ router.get("/oauth/deriv/session", async (req, res) => {
       res.status(503).json({ error: "Deriv login status is temporarily unavailable." });
       return;
     }
-    const accounts = parseAccountBalances(await response.json());
+    const payload: unknown = await response.json();
+    const accounts = parseAccountBalances(payload);
     if (!accounts) {
-      logger.error("Deriv accounts response did not contain an account list");
+      logger.error(
+        { responseKeys: isRecord(payload) ? Object.keys(payload) : [] },
+        "Deriv accounts response did not contain a valid account list",
+      );
       res.status(502).json({ error: "Deriv returned an invalid account list." });
       return;
     }

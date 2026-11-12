@@ -202,6 +202,39 @@ test("Deriv API-token login rejects malformed and oversized token submissions", 
   }
 });
 
+test("Deriv account parser accepts the accounts wrapper returned by API gateways", async () => {
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin !== "https://api.derivws.com") return nativeFetch(input, init);
+    return new Response(JSON.stringify({
+      data: {
+        accounts: [
+          { balance: 98.76, currency: "", status: "active", account_type: "real" },
+        ],
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    const response = await nativeFetch(`${baseUrl}/api/oauth/deriv/token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: "wrapped-response-token" }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      authenticated: true,
+      accounts: [{ accountType: "real", balance: 98.76, currency: "" }],
+    });
+  } finally {
+    globalThis.fetch = nativeFetch;
+  }
+});
+
 test("Deriv callback rejects state mismatches without exchanging a code", async () => {
   const login = await fetch(`${baseUrl}/api/oauth/deriv/login`, { redirect: "manual" });
   const stateCookie = login.headers.get("set-cookie");
